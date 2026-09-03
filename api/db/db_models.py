@@ -58,6 +58,7 @@ from api.db.gaussdb_error_utils import (
     is_undefined_object_error,
     sqlstate_from_exception,
 )
+from api.db.tenant_model_migration import migrate_postgres_tenant_models
 from api.utils.json_encode import json_dumps, json_loads
 from api.utils.configs import deserialize_b64, serialize_b64
 
@@ -2522,6 +2523,8 @@ def migrate_db():
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)
     migrate_model_type_names()
+    if settings.DATABASE_TYPE.upper() == "POSTGRES":
+        migrate_postgres_tenant_models(DB)
     ensure_model_indexes(migrator)
 
 
