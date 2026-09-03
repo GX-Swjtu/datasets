@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # base stage
 FROM ubuntu:24.04 AS base
 USER root
@@ -37,6 +39,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # selenium:      libatk-bridge2.0-0                       chrome-linux64-121-0-6167-85
 # Building C extensions: libpython3-dev libgtk-4-1 libnss3 xdg-utils libgbm-dev
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=ragflow_apt_lists,target=/var/lib/apt/lists,sharing=locked \
     if [ "$NEED_MIRROR" == "1" ]; then \
         # CI runners may inject a proxy whose TLS certificate is not trusted inside
         # the fresh Ubuntu base image yet. Keep the Ubuntu mirror on HTTP here so
@@ -70,6 +73,7 @@ RUN mkdir -p /usr/share/infinity/resource && \
 
 ARG NGINX_VERSION=1.31.3-1~noble
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=ragflow_apt_lists,target=/var/lib/apt/lists,sharing=locked \
     mkdir -p /etc/apt/keyrings && \
     curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /etc/apt/keyrings/nginx-archive-keyring.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/ubuntu/ noble nginx" > /etc/apt/sources.list.d/nginx.list && \
@@ -100,6 +104,7 @@ ENV PATH=/root/.local/bin:$PATH
 
 # Install Node.js 22.x (Ubuntu 24.04's Node.js is too old)
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=ragflow_apt_lists,target=/var/lib/apt/lists,sharing=locked \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get purge -y nodejs npm && \
     apt-get autoremove -y && \
@@ -153,6 +158,7 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps 
 # macOS ARM64 environment, install msodbcsql18.
 # general x86_64 environment, install msodbcsql17.
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=ragflow_apt_lists,target=/var/lib/apt/lists,sharing=locked \
     curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
     curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list > /etc/apt/sources.list.d/mssql-release.list && \
     apt update && \
@@ -186,8 +192,9 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps 
     fi
 
 
-# builder stage
-FROM base AS builder
+# Python dependency stage. Keep this independent from the frontend so changes
+# to either lockfile do not invalidate the other dependency graph.
+FROM base AS python-builder
 USER root
 
 WORKDIR /ragflow
@@ -195,9 +202,9 @@ WORKDIR /ragflow
 # Install build-only dependencies for compiling Python C extensions.
 # These are not inherited from base to keep the production image smaller.
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=ragflow_apt_lists,target=/var/lib/apt/lists,sharing=locked \
     apt-get update --fix-missing && \
-    apt-get install -y build-essential libpython3-dev libicu-dev libgbm-dev && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y build-essential libpython3-dev libicu-dev libgbm-dev
 
 # install dependencies from uv.lock file
 COPY pyproject.toml uv.lock ./
@@ -229,20 +236,34 @@ RUN --mount=type=cache,id=ragflow_uv,target=/root/.cache/uv,sharing=locked \
     # Ensure pip is available in the venv for runtime package installation (fixes #12651)
     .venv/bin/python3 -m ensurepip --upgrade
 
+# Frontend build stage. This can run in parallel with python-builder and keeps
+# Python dependency changes from evicting npm and Vite build layers.
+FROM base AS web-builder
+USER root
+
+WORKDIR /ragflow
+
 # Install frontend dependencies — depends only on package manifests so
 # web source / docs changes don't invalidate this layer.
 COPY web/package.json web/package-lock.json web/.npmrc ./web/
 RUN --mount=type=cache,id=ragflow_npm,target=/root/.npm,sharing=locked \
-    cd web && NODE_OPTIONS="--max-old-space-size=8192" npm install
+    cd web && NODE_OPTIONS="--max-old-space-size=8192" npm ci --prefer-offline --no-audit --no-fund
 
 # Copy full web source and docs for the frontend build.
 COPY web web
 COPY docs docs
 RUN --mount=type=cache,id=ragflow_npm,target=/root/.npm,sharing=locked \
+    --mount=type=cache,id=ragflow_vite,target=/ragflow/web/node_modules/.vite-cache,sharing=locked \
     cd web && NODE_OPTIONS="--max-old-space-size=8192" VITE_BUILD_SOURCEMAP=false VITE_MINIFY=esbuild npm run build
 
+# Version metadata changes independently of application dependency layers.
+FROM base AS version-builder
+USER root
+
+WORKDIR /ragflow
+
 RUN --mount=type=bind,source=.git,target=/ragflow/.git \
-    version_info=$(git describe --tags --match=v* --first-parent --always) && \
+    version_info=$(git describe --tags --match=v* --always) && \
     echo "$version_info" > /ragflow/VERSION
 
 # production stage
@@ -253,7 +274,7 @@ WORKDIR /ragflow
 
 # Copy Python environment and packages
 ENV VIRTUAL_ENV=/ragflow/.venv
-COPY --from=builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
+COPY --from=python-builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 ENV PYTHONPATH=/ragflow/
@@ -287,10 +308,10 @@ COPY bin bin
 COPY tools/scripts tools/scripts
 
 # Copy compiled web pages
-COPY --from=builder /ragflow/web/dist /ragflow/web/dist
+COPY --from=web-builder /ragflow/web/dist /ragflow/web/dist
 
 # Copy version info
-COPY --from=builder /ragflow/VERSION /ragflow/VERSION
+COPY --from=version-builder /ragflow/VERSION /ragflow/VERSION
 
 # Set environment variables
 ENV HF_ENDPOINT=https://hf-mirror.com
