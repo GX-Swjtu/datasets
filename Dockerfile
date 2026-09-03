@@ -196,6 +196,7 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps 
 # to either lockfile do not invalidate the other dependency graph.
 FROM base AS python-builder
 USER root
+ARG UV_HTTP_TIMEOUT_SECONDS=200
 
 WORKDIR /ragflow
 
@@ -232,7 +233,8 @@ RUN --mount=type=cache,id=ragflow_uv,target=/root/.cache/uv,sharing=locked \
     # DEFAULT_HEALTH_CHECK_STALENESS_MULTIPLIER, 1.88.0 wheel pulled via
     # some proxies missing RedisPipelineLpopOperation) — always re-fetching
     # the locked version avoids serving a half-broken cached copy.
-    uv sync --python 3.13 --frozen --refresh-package litellm && \
+    UV_HTTP_TIMEOUT="$UV_HTTP_TIMEOUT_SECONDS" \
+        uv sync --python 3.13 --frozen --refresh-package litellm && \
     # Ensure pip is available in the venv for runtime package installation (fixes #12651)
     .venv/bin/python3 -m ensurepip --upgrade
 
