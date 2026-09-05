@@ -45,6 +45,20 @@ class APITokenService(CommonService):
 class API4ConversationService(CommonService):
     model = API4Conversation
 
+    @classmethod
+    def update_by_id(cls, pid, data):
+        from functools import partial
+        from inspect import unwrap
+        from api.db.services.agent_session_service import guard_legacy_write
+        # The outer guard owns the connection/transaction; retain the upstream
+        # implementation and adapter hooks without opening a nested connection.
+        return guard_legacy_write(pid, data, partial(unwrap(super().update_by_id), cls))
+
+    @classmethod
+    def delete_by_id(cls, pid):
+        from api.db.services.agent_session_service import delete_session
+        return delete_session(pid)
+
     @staticmethod
     def _normalize_query_date(value, is_end=False):
         if "T" in value:
@@ -132,6 +146,7 @@ class API4ConversationService(CommonService):
         )
 
     @classmethod
-    @DB.connection_context()
     def delete_by_dialog_ids(cls, dialog_ids):
-        return cls.model.delete().where(cls.model.dialog_id.in_(dialog_ids)).execute()
+        with DB.connection_context():
+            ids = [row.id for row in cls.model.select(cls.model.id).where(cls.model.dialog_id.in_(dialog_ids))]
+        return sum(cls.delete_by_id(session_id) for session_id in ids)

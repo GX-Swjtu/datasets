@@ -13,7 +13,9 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import asyncio
 import json
+from contextlib import suppress
 import logging
 import time
 from functools import reduce
@@ -355,6 +357,7 @@ class UserCanvasService(CommonService):
 
 
 async def completion(tenant_id, agent_id, session_id=None, **kwargs):
+    from api.db.services import agent_session_service as sessions
     query = kwargs.get("query", "") or kwargs.get("question", "")
     files = kwargs.get("files", [])
     inputs = kwargs.get("inputs", {})
@@ -384,9 +387,26 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
         await thread_pool_exec(API4ConversationService.save, **conv)
         conv = API4Conversation(**conv)
 
-    message_id = str(uuid4())
+    try:
+        managed = await thread_pool_exec(sessions.begin_generation, session_id,
+                                        kwargs.get("client_message_id"), kwargs.get("control_epoch"), query, files,
+                                        inputs, user_id, agent_id)
+    except sessions.SessionConflict as exc:
+        canvas.close()
+        if exc.code == "GENERATION_ALREADY_ACCEPTED":
+            yield "data:" + json.dumps({"event": "session_replayed", "data": {"accepted": True}}) + "\n\n"
+            return
+        yield "data:" + json.dumps({"code": exc.status, "message": exc.code}) + "\n\n"
+        return
+    message_id = managed.message_id if managed else str(uuid4())
+    if managed:
+        canvas.close()
+        canvas = Canvas(json.dumps(managed.dsl, ensure_ascii=False), tenant_id, task_id=session_id,
+                        canvas_id=agent_id, custom_header=custom_header)
+        files = managed.files
     conv.message.append({"role": "user", "content": query, "id": message_id, "files": files})
     txt = ""
+    presentation = {}
     run_kwargs = {
         "query": query,
         "files": files,
@@ -397,9 +417,25 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     }
     if chat_template_kwargs is not None:
         run_kwargs["chat_template_kwargs"] = chat_template_kwargs
+    if managed:
+        run_kwargs["controlled_message_id"] = message_id
 
+    async def persist_progress():
+        last_saved = None
+        while True:
+            await asyncio.sleep(1)
+            snapshot = (txt, presentation, canvas.get_reference())
+            changed = snapshot != last_saved
+            await thread_pool_exec(sessions.checkpoint, managed, snapshot[0] if changed else None,
+                                   snapshot[2] if changed else None, presentation=snapshot[1] if changed else None)
+            last_saved = snapshot
+
+    progress_task = asyncio.create_task(persist_progress()) if managed else None
+    finished = False
     try:
         async for ans in canvas.run(**run_kwargs):
+            if progress_task and progress_task.done():
+                progress_task.result()
             ans["session_id"] = session_id
             if ans["event"] == "message":
                 txt += ans["data"]["content"]
@@ -407,9 +443,38 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
                     txt += "<think>"
                 elif ans["data"].get("end_to_think", False):
                     txt += "</think>"
+            if managed:
+                presentation = sessions.message_presentation(presentation, ans)
             yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
+        finished = not bool(canvas.error)
+    except sessions.SessionConflict as exc:
+        yield "data:" + json.dumps({"code": exc.status, "message": exc.code}) + "\n\n"
     finally:
-        canvas.close()
+        try:
+            if progress_task:
+                progress_task.cancel()
+                # A checkpoint failure already interrupts the event loop above.
+                # It must not prevent closing runtime resources below.
+                with suppress(asyncio.CancelledError, Exception):
+                    await progress_task
+            if managed and not finished:
+                try:
+                    await asyncio.shield(thread_pool_exec(sessions.checkpoint, managed, txt, canvas.get_reference(), None, False, True, presentation))
+                except sessions.SessionConflict:
+                    pass
+                except Exception as exc:
+                    logging.warning("Interrupted session checkpoint unavailable: %s", type(exc).__name__)
+        finally:
+            canvas.close()
+
+    if managed:
+        if finished:
+            try:
+                state = await thread_pool_exec(sessions.checkpoint, managed, txt, canvas.get_reference(), str(canvas), True, False, presentation)
+                yield "data:" + json.dumps({"event": "session_committed", "data": state}) + "\n\n"
+            except sessions.SessionConflict as exc:
+                yield "data:" + json.dumps({"code": exc.status, "message": exc.code}) + "\n\n"
+        return
 
     conv.message.append({"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id})
     current_reference = canvas.get_reference()

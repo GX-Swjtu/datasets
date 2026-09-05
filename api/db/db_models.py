@@ -38,6 +38,7 @@ from peewee import (
     CharField,
     CompositeKey,
     DateTimeField,
+    DoubleField,
     Field,
     FloatField,
     IntegerField,
@@ -1534,6 +1535,38 @@ class API4Conversation(DataBaseModel):
 
     class Meta:
         db_table = "api_4_conversation"
+
+
+class AgentSessionControl(DataBaseModel):
+    """Opt-in coordination metadata; message bodies remain in API4Conversation."""
+
+    session_id = CharField(max_length=32, primary_key=True)
+    agent_id = CharField(max_length=32)
+    owner_id = CharField(max_length=255)
+    revision = BigIntegerField(default=0)
+    epoch = BigIntegerField(default=0)
+    mode = CharField(max_length=16, default="ai")
+    last_seq = BigIntegerField(default=0)
+    context_seq = BigIntegerField(default=0)
+    run_id = CharField(max_length=64, null=True)
+    run_message_id = CharField(max_length=64, null=True)
+    # Epoch seconds require double precision: PostgreSQL REAL rounds modern
+    # timestamps by over a minute, which can expire a freshly renewed lease.
+    lease_expires_at = DoubleField(default=0)
+
+    class Meta:
+        db_table = "agent_session_control"
+
+
+class AgentSessionOperation(DataBaseModel):
+    session_id = CharField(max_length=32)
+    operation_id = CharField(max_length=64)
+    digest = CharField(max_length=64)
+    result = JSONField(default={})
+
+    class Meta:
+        db_table = "agent_session_operation"
+        primary_key = CompositeKey("session_id", "operation_id")
 
 
 class UserCanvas(DataBaseModel):

@@ -209,6 +209,8 @@ def _normalize_agent_session(conv):
     if conv["reference"]:
         messages = [message for i, message in enumerate(conv["message"]) if i != 0 and message["role"] != "user"]
         for message, reference in zip(messages, conv["reference"]):
+            if "seq" in message:
+                continue  # Managed messages carry their own reference association.
             chunks = reference.get("chunks", [])
             if isinstance(chunks, dict):
                 refs = []
@@ -604,6 +606,13 @@ async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace
             ans = answer
 
         event = ans.get("event")
+        if req.get("client_message_id") and (
+            event in {"session_committed", "session_replayed"} or ans.get("code")
+        ):
+            # Managed sessions require an explicit durable acknowledgement.
+            # Keep their commit/fencing result through this native event filter.
+            yield ans
+            continue
         if event == "node_finished":
             if return_trace:
                 data = ans.get("data", {})

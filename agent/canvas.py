@@ -473,7 +473,7 @@ class Canvas(Graph):
         self.globals["sys.date"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         st = time.perf_counter()
         self._loop = asyncio.get_running_loop()
-        self.message_id = get_uuid()
+        self.message_id = kwargs.get("controlled_message_id") or get_uuid()
         created_at = int(time.time())
         self.add_user_input(kwargs.get("query"))
         path_set = set(self.path)
