@@ -278,6 +278,13 @@ class Base(ABC):
         gen_conf = {k: v for k, v in gen_conf.items() if k in ALLOWED_GEN_CONF_KEYS}
         return gen_conf
 
+    def _stream_reasoning_delta(self, delta, reasoning_start):
+        reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+        if not reasoning:
+            return "", False
+        prefix = "" if reasoning_start else "<think>"
+        return prefix + reasoning + "</think>", True
+
     async def _async_chat_streamly(self, history, gen_conf, **kwargs):
         logging.info("[HISTORY STREAMLY]" + json.dumps(history, ensure_ascii=False, indent=4))
         reasoning_start = False
@@ -288,6 +295,8 @@ class Base(ABC):
             gen_conf=gen_conf,
             request_kwargs={},
         )
+        # Consume model-specific controls before the SDK whitelist drops them.
+        gen_conf = self._clean_conf(gen_conf)
         request_kwargs = {"model": self.model_name, "messages": history, "stream": True, **gen_conf}
         stop = kwargs.get("stop")
         if stop:
@@ -326,7 +335,6 @@ class Base(ABC):
         gen_conf = dict(gen_conf or {})
         if system and history and history[0].get("role") != "system":
             history.insert(0, {"role": "system", "content": system})
-        gen_conf = self._clean_conf(gen_conf)
         ans = ""
         total_tokens = 0
         # Reset so a stale split from a previous call can't leak into this one.
@@ -485,14 +493,14 @@ class Base(ABC):
         self.tools = tools
 
     async def async_chat_with_tools(self, system: str, history: list, gen_conf: dict | None = None):
-        gen_conf = dict(gen_conf or {})
-        gen_conf = self._clean_conf(gen_conf)
+        original_gen_conf = dict(gen_conf or {})
         gen_conf, extra_request_kwargs = _apply_model_family_policies(
             self.model_name,
             backend="base",
-            gen_conf=gen_conf,
+            gen_conf=original_gen_conf,
             request_kwargs={},
         )
+        gen_conf = self._clean_conf(gen_conf)
         if system and history and history[0].get("role") != "system":
             history.insert(0, {"role": "system", "content": system})
 
@@ -555,7 +563,7 @@ class Base(ABC):
 
                 logging.warning(f"Exceed max rounds: {self.max_rounds}")
                 history.append({"role": "user", "content": f"Exceed max rounds: {self.max_rounds}"})
-                response, token_count = await self._async_chat(history, gen_conf)
+                response, token_count = await self._async_chat(history, original_gen_conf)
                 ans += response
                 # _async_chat set self.last_usage to its own call; fold it into the aggregate.
                 _fb = getattr(self, "last_usage", None) or {}
@@ -574,13 +582,13 @@ class Base(ABC):
 
     async def async_chat_streamly_with_tools(self, system: str, history: list, gen_conf: dict | None = None):
         gen_conf = dict(gen_conf or {})
-        gen_conf = self._clean_conf(gen_conf)
         gen_conf, extra_request_kwargs = _apply_model_family_policies(
             self.model_name,
             backend="base",
             gen_conf=gen_conf,
             request_kwargs={},
         )
+        gen_conf = self._clean_conf(gen_conf)
         tools = self.tools
         if system and history and history[0].get("role") != "system":
             history.insert(0, {"role": "system", "content": system})
@@ -643,15 +651,10 @@ class Base(ABC):
                         if not hasattr(delta, "content") or delta.content is None:
                             delta.content = ""
 
-                        _reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-                        if _reasoning:
-                            ans = ""
-                            if not reasoning_start:
-                                reasoning_start = True
-                                ans = "<think>"
-                            ans += _reasoning + "</think>"
-                            yield ans
-                        else:
+                        thinking_text, reasoning_start = self._stream_reasoning_delta(delta, reasoning_start)
+                        if thinking_text:
+                            yield thinking_text
+                        if delta.content:
                             reasoning_start = False
                             answer += delta.content
                             yield delta.content
@@ -722,13 +725,14 @@ class Base(ABC):
                     messages=history,
                     stream=True,
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice="none",
                     **gen_conf,
                     **extra_request_kwargs,
                 )
 
                 fb_estimate = 0
                 fb_usage = None
+                reasoning_start = False
                 async for resp in response:
                     _u = usage_from_response(resp)
                     if _u["total_tokens"]:
@@ -736,11 +740,15 @@ class Base(ABC):
                     if not hasattr(resp, "choices") or not resp.choices:
                         continue
                     delta = resp.choices[0].delta
-                    if not hasattr(delta, "content") or delta.content is None:
-                        continue
+                    thinking_text, reasoning_start = self._stream_reasoning_delta(delta, reasoning_start)
+                    if thinking_text:
+                        yield thinking_text
+                    content = getattr(delta, "content", None) or ""
                     if not _u["total_tokens"]:
-                        fb_estimate += num_tokens_from_string(delta.content)
-                    yield delta.content
+                        fb_estimate += num_tokens_from_string(content)
+                    if content:
+                        reasoning_start = False
+                        yield content
 
                 _commit_round(fb_usage, fb_estimate)
                 yield total_tokens
@@ -780,6 +788,7 @@ class Base(ABC):
             gen_conf=gen_conf,
             request_kwargs=kwargs,
         )
+        gen_conf = self._clean_conf(gen_conf)
 
         response = await self.async_client.chat.completions.create(model=self.model_name, messages=history, **gen_conf, **kwargs)
 
@@ -796,7 +805,6 @@ class Base(ABC):
         gen_conf = dict(gen_conf or {})
         if system and history and history[0].get("role") != "system":
             history.insert(0, {"role": "system", "content": system})
-        gen_conf = self._clean_conf(gen_conf)
 
         for attempt in range(self.max_retries + 1):
             try:
