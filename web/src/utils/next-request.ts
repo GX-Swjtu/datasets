@@ -17,9 +17,9 @@
 import message from '@/components/ui/message';
 import { Authorization } from '@/constants/authorization';
 import i18n from '@/locales/config';
-import authorizationUtil, {
+import {
   getAuthorization,
-  redirectToLogin,
+  handleUnauthorized,
 } from '@/utils/authorization-util';
 import notification from '@/utils/notification';
 import axios from 'axios';
@@ -89,9 +89,6 @@ const errorHandler = (error: {
   return response ?? { data: { code: 1999 } };
 };
 
-// avoid duplicate 401 redirects
-let isRedirecting = false;
-
 const request = axios.create({
   //   errorHandler,
   timeout: 300000,
@@ -146,15 +143,15 @@ request.interceptors.response.use(
     if (data?.code === 100 && !skipErrorNotification) {
       message.error(data?.message);
     } else if (data?.code === 401) {
-      if (!isRedirecting) {
-        isRedirecting = true;
+      const recovering = handleUnauthorized(
+        response.config.url,
+        (response.config as any).skipLoginRedirect,
+      );
+      if (!recovering && !skipErrorNotification) {
         notification.error({
-          message: data?.message,
-          description: data?.message,
+          message: data?.message || RetcodeMessage[401],
           duration: 3,
         });
-        authorizationUtil.removeAll();
-        redirectToLogin();
       }
     } else if (data?.code !== 0 && !skipErrorNotification) {
       notification.error({
@@ -169,19 +166,16 @@ request.interceptors.response.use(
     // Handle HTTP 401 (token expired / invalid)
     const status = error?.response?.status;
     if (status === 401) {
-      if (!isRedirecting) {
-        isRedirecting = true;
-        const messageText =
-          error?.response?.data?.message || RetcodeMessage[401];
+      const recovering = handleUnauthorized(
+        error?.config?.url,
+        error?.config?.skipLoginRedirect,
+      );
+      if (!recovering && !error?.config?.skipGlobalErrorNotification) {
         notification.error({
-          message: messageText,
-          description: messageText,
+          message: error?.response?.data?.message || RetcodeMessage[401],
           duration: 3,
         });
-        authorizationUtil.removeAll();
-        redirectToLogin();
       }
-
       return Promise.reject(error);
     }
 

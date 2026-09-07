@@ -262,6 +262,8 @@ def get_config():
         data={
             "registerEnabled": settings.REGISTER_ENABLED,
             "disablePasswordLogin": settings.DISABLE_PASSWORD_LOGIN,
+            "autoLoginChannel": settings.AUTO_LOGIN_CHANNEL,
+            "logoutRedirectUrl": settings.LOGOUT_REDIRECT_URL,
         }
     )
 

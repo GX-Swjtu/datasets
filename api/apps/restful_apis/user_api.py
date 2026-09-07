@@ -41,6 +41,7 @@ from api.utils.api_utils import (
     validate_request,
 )
 from api.utils.nickname_validation import validate_nickname
+from api.utils.login_flow import login_result_url, safe_return_to
 from api.utils.crypt import decrypt
 from rag.utils.redis_conn import REDIS_CONN
 from api.apps import login_required, current_user, login_user, logout_user
@@ -164,16 +165,23 @@ async def get_login_channels():
 
 @manager.route("/auth/login/<channel>", methods=["GET"])  # noqa: F821
 async def oauth_login(channel):
-    channel_config = settings.OAUTH_CONFIG.get(channel)
-    if not channel_config:
-        raise ValueError(f"Invalid channel name: {channel}")
-    auth_cli = get_auth_client(channel_config)
-
-    state = get_uuid()
-    session["oauth_state"] = state
-    auth_url = auth_cli.get_authorization_url(state)
-    logging.info("OAuth login initiated: channel='%s', state='%s'", channel, state)
-    return redirect(auth_url)
+    return_to = safe_return_to(request.args.get("return_to", "/"))
+    try:
+        channel_config = settings.OAUTH_CONFIG.get(channel)
+        if not channel_config:
+            return redirect(login_result_url(return_to, error="invalid_channel"))
+        auth_cli = get_auth_client(channel_config)
+        state = get_uuid()
+        session["oauth_state"] = state
+        session["oauth_channel"] = channel
+        session["oauth_return_to"] = return_to
+        session["oauth_started_at"] = time.time()
+        auth_url = auth_cli.get_authorization_url(state)
+        logging.info("OAuth login initiated: channel='%s'", channel)
+        return redirect(auth_url)
+    except Exception:
+        logging.exception("OAuth login initiation failed")
+        return redirect(login_result_url(return_to, error="service_unavailable"))
 
 
 @manager.route("/auth/oauth/<channel>/callback", methods=["GET"])  # noqa: F821
@@ -181,22 +189,29 @@ async def oauth_callback(channel):
     """
     Handle the OAuth/OIDC callback for various channels dynamically.
     """
+    return_to = "/"
     try:
-        channel_config = settings.OAUTH_CONFIG.get(channel)
-        if not channel_config:
-            raise ValueError(f"Invalid channel name: {channel}")
-        auth_cli = get_auth_client(channel_config)
-
-        # Check the state
         state = request.args.get("state")
-        if not state or state != session.get("oauth_state"):
-            return redirect("/?error=invalid_state")
+        if not state or state != session.get("oauth_state") or channel != session.get("oauth_channel"):
+            return redirect(login_result_url(error="invalid_state"))
         session.pop("oauth_state", None)
+        session.pop("oauth_channel", None)
+        return_to = safe_return_to(session.pop("oauth_return_to", "/"))
+        started_at = session.pop("oauth_started_at", 0)
+        if not isinstance(started_at, (int, float)) or not 0 <= time.time() - started_at <= 300:
+            return redirect(login_result_url(return_to, error="invalid_state"))
 
-        # Obtain the authorization code
+        provider_error = request.args.get("error")
+        if provider_error:
+            error = "access_denied" if provider_error == "access_denied" else "authentication_failed"
+            return redirect(login_result_url(return_to, error=error))
         code = request.args.get("code")
         if not code:
-            return redirect("/?error=missing_code")
+            return redirect(login_result_url(return_to, error="missing_code"))
+        channel_config = settings.OAUTH_CONFIG.get(channel)
+        if not channel_config:
+            return redirect(login_result_url(return_to, error="invalid_channel"))
+        auth_cli = get_auth_client(channel_config)
 
         # Exchange authorization code for access token
         if hasattr(auth_cli, "async_exchange_code_for_token"):
@@ -205,7 +220,7 @@ async def oauth_callback(channel):
             token_info = auth_cli.exchange_code_for_token(code)
         access_token = token_info.get("access_token")
         if not access_token:
-            return redirect("/?error=token_failed")
+            return redirect(login_result_url(return_to, error="token_failed"))
 
         id_token = token_info.get("id_token")
 
@@ -215,7 +230,7 @@ async def oauth_callback(channel):
         else:
             user_info = auth_cli.fetch_user_info(access_token, id_token=id_token)
         if not user_info.email:
-            return redirect("/?error=email_missing")
+            return redirect(login_result_url(return_to, error="email_missing"))
 
         # Login or register
         users = UserService.query(email=user_info.email)
@@ -250,25 +265,25 @@ async def oauth_callback(channel):
                 # Try to log in
                 user = users[0]
                 login_user(user)
-                return redirect(f"/?auth={user.get_id()}")
+                return redirect(login_result_url(return_to, auth=user.get_id()))
 
             except Exception as e:
                 rollback_user_registration(user_id)
                 logging.exception(e)
-                return redirect(f"/?error={str(e)}")
+                return redirect(login_result_url(return_to, error="authentication_failed"))
 
         # User exists, try to log in
         user = users[0]
         user.access_token = get_uuid()
         if user and hasattr(user, "is_active") and user.is_active == "0":
-            return redirect("/?error=user_inactive")
+            return redirect(login_result_url(return_to, error="user_inactive"))
 
         login_user(user)
         user.save()
-        return redirect(f"/?auth={user.get_id()}")
+        return redirect(login_result_url(return_to, auth=user.get_id()))
     except Exception as e:
         logging.exception(e)
-        return redirect(f"/?error={str(e)}")
+        return redirect(login_result_url(return_to, error="authentication_failed"))
 
 
 @manager.route("/auth/logout", methods=["POST"])  # noqa: F821

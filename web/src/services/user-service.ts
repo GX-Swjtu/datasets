@@ -15,7 +15,8 @@
  */
 
 import api from '@/utils/api';
-import registerServer from '@/utils/register-server';
+import registerServer, { registerNextServer } from '@/utils/register-server';
+import { safeReturnTo } from '@/utils/login-flow';
 import request, { post } from '@/utils/request';
 
 const {
@@ -94,9 +95,30 @@ const methods = {
 
 const userService = registerServer<keyof typeof methods>(methods, request);
 
-export const getLoginChannels = () => request.get(api.loginChannels);
-export const loginWithChannel = (channel: string) =>
-  (window.location.href = api.loginChannel(channel));
+export const getLoginChannels = () =>
+  request.get(api.loginChannels, { skipGlobalErrorNotification: true });
+export const loginWithChannel = (channel: string, returnTo = '/') => {
+  const query = new URLSearchParams({ return_to: safeReturnTo(returnTo) });
+  window.location.replace(
+    `${api.loginChannel(encodeURIComponent(channel))}?${query}`,
+  );
+};
+
+const browserLoginService = registerNextServer({
+  config: { url: api.getSystemConfig, method: 'get' },
+  verify: { url: api.userInfo, method: 'get' },
+  logout: { url: api.logout, method: 'post' },
+});
+const browserLoginOptions = {
+  skipLoginRedirect: true,
+  skipGlobalErrorNotification: true,
+};
+export const getBrowserLoginConfig = () =>
+  browserLoginService.config(browserLoginOptions, true);
+export const verifyBrowserLogin = () =>
+  browserLoginService.verify(browserLoginOptions, true);
+export const logoutBrowserSession = (skipToken = false) =>
+  browserLoginService.logout({ ...browserLoginOptions, skipToken }, true);
 
 export const listTenantUser = (tenantId: string) =>
   request.get(api.listTenantUser(tenantId));

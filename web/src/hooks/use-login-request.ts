@@ -19,14 +19,20 @@ import { Authorization } from '@/constants/authorization';
 import userService, {
   getLoginChannels,
   loginWithChannel,
+  getBrowserLoginConfig,
+  logoutBrowserSession,
 } from '@/services/user-service';
 import {
   default as authorizationUtil,
-  redirectToLogin,
   default as storage,
 } from '@/utils/authorization-util';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import {
+  clearAutomaticLogin,
+  portalDestination,
+  safeReturnTo,
+} from '@/utils/login-flow';
 import { useSaveSetting } from './use-user-setting-request';
 
 export interface ILoginRequestBody {
@@ -44,23 +50,36 @@ export interface ILoginChannel {
   icon: string;
 }
 
+const LoginKeys = { channels: () => ['loginChannels'] as const };
+
 export const useLoginChannels = () => {
-  const { data, isLoading } = useQuery({
-    queryKey: ['loginChannels'],
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: LoginKeys.channels(),
+    retry: false,
     queryFn: async () => {
       const { data: res = {} } = await getLoginChannels();
-      return res.data || [];
+      if (res.code !== 0 || !Array.isArray(res.data))
+        throw new Error('Channels unavailable');
+      return res.data;
     },
   });
 
-  return { channels: data as ILoginChannel[], loading: isLoading };
+  return {
+    channels: data as ILoginChannel[],
+    loading: isLoading,
+    error,
+    refetch,
+  };
 };
 
 export const useLoginWithChannel = () => {
   const { isPending: loading, mutateAsync } = useMutation({
     mutationKey: ['loginWithChannel'],
     mutationFn: async (channel: string) => {
-      loginWithChannel(channel);
+      const target = safeReturnTo(
+        new URLSearchParams(location.search).get('return_to') || '/',
+      );
+      loginWithChannel(channel, target);
       return Promise.resolve();
     },
   });
@@ -144,14 +163,33 @@ export const useLogout = () => {
     mutateAsync,
   } = useMutation({
     mutationKey: ['logout'],
+    onError: () => message.error(t('login.sso.logoutFailed')),
     mutationFn: async () => {
-      const { data = {} } = await userService.logout();
-      if (data.code === 0) {
-        message.success(t('message.logout'));
-        authorizationUtil.removeAll();
-        redirectToLogin();
-      }
-      return data.code;
+      // Load the destination before logout so a failed config request leaves a retryable session.
+      const { data: settings } = await getBrowserLoginConfig();
+      if (settings?.code !== 0 || !settings?.data)
+        throw new Error(t('login.sso.serviceUnavailable'));
+      const destination = portalDestination(settings.data.logoutRedirectUrl);
+      const attemptLogout = async (skipToken = false): Promise<number> => {
+        try {
+          const { data } = await logoutBrowserSession(skipToken);
+          return data?.code;
+        } catch (error: any) {
+          if (error?.response?.status !== 401) throw error;
+          return 401;
+        }
+      };
+      let code = await attemptLogout();
+      // A stale Authorization header can hide a still-valid native session cookie.
+      // Invalidate that session too before declaring the browser signed out.
+      if (code === 401) code = await attemptLogout(true);
+      if (code !== 0 && code !== 401)
+        throw new Error(t('login.sso.logoutFailed'));
+      authorizationUtil.removeAll();
+      clearAutomaticLogin();
+      if (destination) window.location.replace(destination);
+      else window.location.replace('/login');
+      return code;
     },
   });
 

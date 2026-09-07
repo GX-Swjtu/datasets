@@ -32,6 +32,7 @@ import { NICKNAME_PATTERN } from '../user-setting/profile/constants';
 import { BgSvg } from './bg';
 import FlipCard3D, { FlipFaceContext } from './card';
 import './index.less';
+import SsoLogin from './sso';
 
 type LoginFormContentProps = {
   isLoginPage: boolean;
@@ -413,4 +414,13 @@ const Login = () => {
   );
 };
 
-export default Login;
+export default function LoginEntry() {
+  const { config, loading, error } = useSystemConfig();
+  const [hasResult] = useState(() => {
+    const query = new URLSearchParams(window.location.search);
+    return query.has('auth') || query.has('error');
+  });
+  if (loading || error || config?.autoLoginChannel || hasResult)
+    return <SsoLogin />;
+  return <Login />;
+}

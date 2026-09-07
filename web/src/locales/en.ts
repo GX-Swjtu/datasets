@@ -95,6 +95,26 @@ export default {
       running: 'Running...',
     },
     login: {
+      sso: {
+        loadingTitle: 'Signing in',
+        loadingDescription:
+          'Connecting to your identity provider. Please wait.',
+        failedTitle: 'Unable to sign in',
+        noAccess:
+          'You do not have access to this application. Contact your administrator.',
+        inactive: 'Your account is disabled. Contact your administrator.',
+        expired: 'This sign-in attempt has expired. Please try again.',
+        configurationError:
+          'Single sign-on is not configured correctly. Contact your administrator.',
+        recoveryFailed: 'Your session could not be restored. Please try again.',
+        serviceUnavailable:
+          'Sign-in is temporarily unavailable. Please try again later.',
+        failed: 'Authentication did not complete. Please try again.',
+        retry: 'Try again',
+        portal: 'Return to portal',
+        logoutFailed:
+          'Sign-out did not complete. Check your connection and try again.',
+      },
       loginTitle: 'Sign in to your account',
       signUpTitle: 'Create an account',
       login: 'Sign in',

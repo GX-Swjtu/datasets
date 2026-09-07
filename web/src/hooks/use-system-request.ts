@@ -14,21 +14,34 @@
  *  limitations under the License.
  */
 
-import userService from '@/services/user-service';
+import { getBrowserLoginConfig } from '@/services/user-service';
 import { useQuery } from '@tanstack/react-query';
 
-/**
- * Hook to fetch system configuration including register enable status
- * @returns System configuration with loading status
- */
-export const useSystemConfig = () => {
-  const { data, isLoading } = useQuery({
-    queryKey: ['systemConfig'],
-    queryFn: async () => {
-      const { data = {} } = await userService.getSystemConfig();
-      return data.data || { registerEnabled: 1 }; // Default to enabling registration
-    },
-  });
+export interface BrowserLoginConfig {
+  registerEnabled: number;
+  disablePasswordLogin: boolean;
+  autoLoginChannel?: string;
+  logoutRedirectUrl?: string;
+}
 
-  return { config: data, loading: isLoading };
+export const SystemKeys = { config: () => ['systemConfig'] as const };
+
+export const useSystemConfig = () => {
+  const query = useQuery({
+    queryKey: SystemKeys.config(),
+    queryFn: async (): Promise<BrowserLoginConfig> => {
+      const { data } = await getBrowserLoginConfig();
+      if (data?.code !== 0 || !data?.data)
+        throw new Error('Configuration unavailable');
+      return data.data;
+    },
+    retry: false,
+    staleTime: 60_000,
+  });
+  return {
+    config: query.data,
+    loading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+  };
 };

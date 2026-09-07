@@ -159,6 +159,8 @@ DATABASE = load_database_config(DATABASE_TYPE)
 
 # authentication
 AUTHENTICATION_CONF = None
+AUTO_LOGIN_CHANNEL = ""
+LOGOUT_REDIRECT_URL = ""
 
 # client
 CLIENT_AUTHENTICATION = None
@@ -382,6 +384,9 @@ def init_settings():
     authentication_conf = get_base_config("authentication", {})
 
     global CLIENT_AUTHENTICATION, HTTP_APP_KEY, GITHUB_OAUTH, FEISHU_OAUTH, OAUTH_CONFIG
+    global AUTO_LOGIN_CHANNEL, LOGOUT_REDIRECT_URL
+    AUTO_LOGIN_CHANNEL = str(authentication_conf.get("auto_login_channel") or "").strip()
+    LOGOUT_REDIRECT_URL = str(authentication_conf.get("logout_redirect_url") or "").strip()
     # client
     CLIENT_AUTHENTICATION = authentication_conf.get("client", {}).get("switch", False)
     HTTP_APP_KEY = authentication_conf.get("client", {}).get("http_app_key")

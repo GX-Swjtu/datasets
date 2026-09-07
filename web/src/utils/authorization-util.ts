@@ -21,6 +21,7 @@ import {
   UserInfo,
 } from '@/constants/authorization';
 import { getSearchValue } from './common-util';
+import { isIndependentLoginPath, safeReturnTo } from './login-flow';
 const KeySet = [Authorization, Token, UserInfo];
 
 const storage = {
@@ -85,8 +86,32 @@ export const getAuthorization = () => {
 
 export default storage;
 
-// Will not jump to the login page
+let isRedirectingToLogin = false;
+
 export function redirectToLogin() {
-  // const env = import.meta.env;
-  window.location.href = location.origin + `/login`;
+  if (isRedirectingToLogin) return;
+  isRedirectingToLogin = true;
+  const target = safeReturnTo(
+    location.pathname + location.search + location.hash,
+  );
+  window.location.replace(
+    `/login?${new URLSearchParams({ return_to: target })}`,
+  );
+}
+
+export function handleUnauthorized(url = '', skipLoginRedirect = false) {
+  const path = window.location.pathname;
+  if (
+    skipLoginRedirect ||
+    /^\/(login|login-next)(\/|$)/.test(path) ||
+    /\/auth\/(login|logout|oauth)(\/|$|\?)/.test(url)
+  )
+    return false;
+  if (isIndependentLoginPath(path)) {
+    // These routes own their authentication and embedded credentials.
+    return false;
+  }
+  storage.removeAll();
+  redirectToLogin();
+  return true;
 }
