@@ -170,6 +170,25 @@ class RAGFlowS3:
 
     @use_prefix_path
     @use_default_bucket
+    def stat(self, bucket, fnm):
+        """Read object metadata without downloading its body."""
+        return self.conn[0].head_object(Bucket=bucket, Key=fnm)
+
+    @use_prefix_path
+    @use_default_bucket
+    def get_stream(self, bucket, fnm, *, byte_range=None, etag=None):
+        """Open an S3 response body; the caller owns and must close it."""
+        params = {"Bucket": bucket, "Key": fnm}
+        if byte_range is not None:
+            start, end = byte_range
+            params["Range"] = f"bytes={start}-{end}"
+        if etag:
+            # Do not combine metadata and bytes from different object revisions.
+            params["IfMatch"] = etag
+        return self.conn[0].get_object(**params)
+
+    @use_prefix_path
+    @use_default_bucket
     def obj_exist(self, bucket, fnm, *args, **kwargs):
         try:
             if self.conn[0].head_object(Bucket=bucket, Key=fnm):

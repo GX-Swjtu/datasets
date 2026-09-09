@@ -16,51 +16,100 @@
 
 import message from '@/components/ui/message';
 import { Spin } from '@/components/ui/spin';
-import request from '@/utils/request';
+import { getAuthorization } from '@/utils/authorization-util';
 import classNames from 'classnames';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface VideoPreviewerProps {
   className?: string;
   url: string;
 }
 
+function mediaAuthorization(url: string) {
+  try {
+    const target = new URL(url, window.location.origin);
+    return target.origin === window.location.origin &&
+      !target.username &&
+      !target.password &&
+      target.pathname.startsWith('/api/v1/')
+      ? getAuthorization()
+      : '';
+  } catch {
+    return '';
+  }
+}
+
+function useVideoSource(url: string) {
+  const authorization = mediaAuthorization(url);
+  const [prepared, setPrepared] = useState<{
+    url: string;
+    authorization: string;
+    src?: string;
+    error?: boolean;
+  }>();
+
+  useEffect(() => {
+    if (!authorization) return;
+    const controller = new AbortController();
+    let objectUrl: string | undefined;
+    const options = {
+      credentials: 'same-origin',
+      redirect: 'error',
+      signal: controller.signal,
+    } as const;
+
+    const prepare = async () => {
+      // Native media cannot attach Authorization. Prefer the session cookie so
+      // authenticated browser sessions keep byte-range playback.
+      const probe = await fetch(url, { ...options, method: 'HEAD' });
+      let src = url;
+      if (probe.status === 401 || probe.status === 403) {
+        const response = await fetch(url, {
+          ...options,
+          headers: { Authorization: authorization },
+        });
+        if (!response.ok) throw new Error('Video authorization failed');
+        const blob = await response.blob();
+        if (controller.signal.aborted) return;
+        objectUrl = URL.createObjectURL(blob);
+        src = objectUrl;
+      } else if (!probe.ok && probe.status !== 405) {
+        throw new Error('Video metadata unavailable');
+      }
+      if (!controller.signal.aborted) setPrepared({ url, authorization, src });
+    };
+    void prepare().catch(() => {
+      if (!controller.signal.aborted) {
+        setPrepared({ url, authorization, error: true });
+        message.error('Failed to load video');
+      }
+    });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [url, authorization]);
+
+  if (!authorization) return { src: url, loading: false, error: false };
+  if (prepared?.url !== url || prepared.authorization !== authorization) {
+    return { src: undefined, loading: true, error: false };
+  }
+  return { src: prepared.src, loading: false, error: prepared.error };
+}
+
 export const VideoPreviewer: React.FC<VideoPreviewerProps> = ({
   className,
   url,
 }) => {
-  // const url = useGetDocumentUrl();
-  const [videoSrc, setVideoSrc] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-
-  const fetchVideo = useCallback(async () => {
-    setIsLoading(true);
-    const res = await request(url, {
-      method: 'GET',
-      responseType: 'blob',
-      onError: () => {
-        message.error('Failed to load video');
-        setIsLoading(false);
-      },
-    });
-    const objectUrl = URL.createObjectURL(res.data);
-    setVideoSrc(objectUrl);
-    setIsLoading(false);
-  }, [url]);
-
-  useEffect(() => {
-    if (url) {
-      fetchVideo();
-    }
-  }, [url, fetchVideo]);
-
-  useEffect(() => {
-    return () => {
-      if (videoSrc) {
-        URL.revokeObjectURL(videoSrc);
-      }
-    };
-  }, [videoSrc]);
+  const { t } = useTranslation();
+  const { src, loading, error } = useVideoSource(url);
+  const [failedUrl, setFailedUrl] = useState<string>();
+  const failed = error || failedUrl === src;
+  const handleError = () => {
+    setFailedUrl(src);
+    message.error('Failed to load video');
+  };
 
   return (
     <div
@@ -69,22 +118,25 @@ export const VideoPreviewer: React.FC<VideoPreviewerProps> = ({
         className,
       )}
     >
-      {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center">
+      <div className="max-h-[80vh] overflow-auto p-2">
+        {loading ? (
           <Spin />
-        </div>
-      )}
-
-      {!isLoading && videoSrc && (
-        <div className="max-h-[80vh] overflow-auto p-2">
+        ) : failed ? (
+          <a href={src || url} download>
+            {t('common.download')}
+          </a>
+        ) : (
           <video
-            src={videoSrc}
+            key={src}
+            src={src}
             controls
+            playsInline
+            preload="metadata"
             className="w-full h-auto max-w-full object-contain"
-            onLoadedData={() => URL.revokeObjectURL(videoSrc!)}
+            onError={handleError}
           />
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };

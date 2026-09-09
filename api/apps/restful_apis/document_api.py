@@ -75,6 +75,7 @@ from common.metadata_utils import convert_conditions, meta_filter, turn2jsonsche
 from common.misc_utils import get_uuid, thread_pool_exec, thread_pool_exec_long_time
 from api.utils.file_utils import filename_type, thumbnail
 from api.utils.file_response import apply_preview_file_response_headers
+from api.utils.storage_response import storage_response
 from api.utils.web_utils import CONTENT_TYPE_MAP, html2pdf, is_valid_url, apply_safe_file_response_headers
 from common.ssrf_guard import assert_url_is_safe
 from rag.nlp import search
@@ -2113,6 +2114,14 @@ async def get(doc_id):
             return get_data_error_result(message="document not found")
 
         b, n = File2DocumentService.get_storage_address(doc_id=doc_id)
+        content_type = _mimetype_for_document(doc)
+        if content_type.startswith("video/") and callable(getattr(settings.STORAGE_IMPL, "get_stream", None)):
+            response = await storage_response(
+                settings.STORAGE_IMPL, b, n,
+                method=request.method, headers=request.headers, content_type=content_type,
+            )
+            apply_preview_file_response_headers(response, content_type, filename=doc.name)
+            return response
         data = await thread_pool_exec(settings.STORAGE_IMPL.get, b, n)
         if not data:
             return get_data_error_result(message="This file is empty.")
