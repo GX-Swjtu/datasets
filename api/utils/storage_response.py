@@ -2,6 +2,8 @@
 
 import asyncio
 import re
+import threading
+from contextlib import nullcontext
 from functools import partial
 
 from quart import Response
@@ -9,10 +11,16 @@ from quart.wrappers.response import ResponseBody
 from werkzeug.http import http_date, parse_date
 
 
-def _close_object_body(body):
-    # Buffered socket close can wait for an executor read to release its lock.
-    # Schedule it immediately, so cancellation cannot prevent cleanup from starting.
-    closing = asyncio.get_running_loop().run_in_executor(None, body.close)
+def _close_object_body(body, io_lock=None):
+    def close():
+        # urllib3 may return a still-open connection to its pool if close()
+        # races with read(). Wait for that read before closing the response.
+        with io_lock if io_lock is not None else nullcontext():
+            body.close()
+
+    # Schedule immediately so repeated cancellation cannot drop the cleanup.
+    # Waiting for an active read must never block the event loop.
+    closing = asyncio.get_running_loop().run_in_executor(None, close)
     # A disconnected request may stop awaiting cleanup; still retrieve failures.
     closing.add_done_callback(lambda done: None if done.cancelled() else done.exception())
     return closing
@@ -57,6 +65,7 @@ class _ObjectBody(ResponseBody):
         self.byte_range = byte_range
         self.total = total
         self.body = None
+        self._io_lock = threading.Lock()
 
     async def __aenter__(self):
         opening = asyncio.create_task(asyncio.to_thread(self.opener))
@@ -91,12 +100,20 @@ class _ObjectBody(ResponseBody):
         if self.body is not None:
             body = self.body
             self.body = None
-            await asyncio.shield(_close_object_body(body))
+            await asyncio.shield(_close_object_body(body, self._io_lock))
+
+    def _read(self, size):
+        with self._io_lock:
+            # A queued executor read may start after the request was cancelled.
+            body = self.body
+            if body is None:
+                return b""
+            return body.read(size)
 
     async def __aiter__(self):
         remaining = self.length
         while remaining:
-            chunk = await asyncio.to_thread(self.body.read, min(64 * 1024, remaining))
+            chunk = await asyncio.to_thread(self._read, min(64 * 1024, remaining))
             if not chunk:
                 raise OSError("Object storage response ended before Content-Length")
             remaining -= len(chunk)
