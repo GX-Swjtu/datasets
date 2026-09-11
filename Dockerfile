@@ -274,46 +274,46 @@ USER root
 
 WORKDIR /ragflow
 
-# Copy Python environment and packages
+# Prepare runtime directories before linking independently reusable payload layers.
+RUN mkdir -p /etc/nginx/conf.d /var/log/nginx && \
+    rm -f /etc/nginx/sites-enabled/default
+
+# Copy Python environment and packages. --link keeps this large layer reusable
+# when runtime setup or application files change.
 ENV VIRTUAL_ENV=/ragflow/.venv
-COPY --from=python-builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
+COPY --link --from=python-builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 ENV PYTHONPATH=/ragflow/
 
-COPY docker/service_conf.yaml.template ./conf/service_conf.yaml.template
-COPY docker/entrypoint*.sh ./
-RUN chmod +x ./entrypoint*.sh
+COPY --link docker/service_conf.yaml.template ./conf/service_conf.yaml.template
+COPY --link --chmod=755 docker/entrypoint*.sh ./
 
 # Copy nginx configuration for frontend serving
-RUN mkdir -p /etc/nginx/conf.d /var/log/nginx
-
-COPY docker/nginx/nginx.conf docker/nginx/proxy.conf /etc/nginx/
-COPY docker/nginx/ragflow.conf.golang \
+COPY --link docker/nginx/nginx.conf docker/nginx/proxy.conf /etc/nginx/
+COPY --link docker/nginx/ragflow.conf.golang \
      docker/nginx/ragflow.conf.python \
      docker/nginx/ragflow.conf.hybrid \
      /etc/nginx/conf.d/
 
-RUN rm -f /etc/nginx/sites-enabled/default
-
-COPY admin admin
-COPY api api
-COPY conf conf
-COPY deepdoc deepdoc
-COPY rag rag
-COPY agent agent
-COPY pyproject.toml uv.lock ./
-COPY mcp mcp
-COPY common common
-COPY memory memory
-COPY bin bin
-COPY tools/scripts tools/scripts
+COPY --link admin admin
+COPY --link api api
+COPY --link conf conf
+COPY --link deepdoc deepdoc
+COPY --link rag rag
+COPY --link agent agent
+COPY --link pyproject.toml uv.lock ./
+COPY --link mcp mcp
+COPY --link common common
+COPY --link memory memory
+COPY --link bin bin
+COPY --link tools/scripts tools/scripts
 
 # Copy compiled web pages
-COPY --from=web-builder /ragflow/web/dist /ragflow/web/dist
+COPY --link --from=web-builder /ragflow/web/dist /ragflow/web/dist
 
 # Copy version info
-COPY --from=version-builder /ragflow/VERSION /ragflow/VERSION
+COPY --link --from=version-builder /ragflow/VERSION /ragflow/VERSION
 
 # Set environment variables
 ENV HF_ENDPOINT=https://hf-mirror.com
