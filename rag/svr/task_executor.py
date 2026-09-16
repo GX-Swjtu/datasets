@@ -1756,6 +1756,12 @@ async def handle_task():
     task_type = task["task_type"]
     pipeline_task_type = TASK_TYPE_TO_PIPELINE_TASK_TYPE.get(task_type, PipelineTaskType.PARSE) or PipelineTaskType.PARSE
     task_id = task["id"]
+    # Tasks may contain entire agent responses. Log only bounded identifiers;
+    # JSON escaping also keeps control characters on a single log line.
+    task_log_context = json.dumps({
+        "task_id": str(task_id)[:128],
+        "task_type": str(task_type)[:64],
+    })
     try:
         CURRENT_TASKS[task["id"]] = copy.deepcopy(task)
         run_mode = os.environ.get("TE_RUN_MODE", "0")
@@ -1780,11 +1786,11 @@ async def handle_task():
 
         DONE_TASKS += 1
         CURRENT_TASKS.pop(task_id, None)
-        logging.info(f"handle_task done for task {json.dumps(task)}")
-    except TaskCanceledException as e:
+        logging.info("handle_task completed result=success %s", task_log_context)
+    except TaskCanceledException:
         DONE_TASKS += 1
         CURRENT_TASKS.pop(task_id, None)
-        logging.info(f"handle_task canceled for task {task_id}: {getattr(e, 'msg', str(e))}")
+        logging.info("handle_task completed result=canceled %s", task_log_context)
     except Exception as e:
         FAILED_TASKS += 1
         CURRENT_TASKS.pop(task_id, None)
@@ -1797,7 +1803,7 @@ async def handle_task():
         except Exception as e:
             logging.exception(f"[Exception]: {str(e)}")
             pass
-        logging.exception(f"handle_task got exception for task {json.dumps(task)}")
+        logging.exception("handle_task completed result=failed %s", task_log_context)
     finally:
         if not task.get("dataflow_id", ""):
             referred_document_id = None
