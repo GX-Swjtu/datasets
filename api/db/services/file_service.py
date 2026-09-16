@@ -17,7 +17,6 @@ import asyncio
 import base64
 import logging
 import re
-import sys
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -822,7 +821,7 @@ class FileService(CommonService):
             return {
                 "id": location,
                 "name": filename,
-                "size": sys.getsizeof(blob),
+                "size": len(blob),
                 "extension": filename.split(".")[-1].lower(),
                 "mime_type": content_type,
                 "created_by": user_id,
