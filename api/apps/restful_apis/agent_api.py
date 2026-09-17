@@ -590,7 +590,7 @@ async def download_agent_file(tenant_id):
     id = request.args.get("id")
     logging.info("Agent file download requested: tenant_id=%s file_id=%s", tenant_id, id)
     blob = await thread_pool_exec(FileService.get_blob, tenant_id, id)
-    return Response(blob)
+    return Response(blob, mimetype="application/octet-stream")
 
 
 async def _iter_session_completion_events(tenant_id, agent_id, req, return_trace):
