@@ -212,7 +212,7 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
         parser = PARSERS.get(name, by_plaintext)
         callback(0.1, "Start to parse.")
 
-        sections, _, _ = parser(
+        sections, _, pdf_parser = parser(
             filename=filename,
             binary=binary,
             from_page=from_page,
@@ -235,7 +235,25 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER, lang=
 
         callback(0.8, "Finish parsing.")
 
-        for pn, (txt, img) in enumerate(sections):
+        if name == "paddleocr":
+            # PaddleOCR returns text blocks with local page tags, not one
+            # (text, image) pair per slide. Keep gaps for pages with no text.
+            page_texts = defaultdict(list)
+            for text, tag in sections:
+                positions = pdf_parser.extract_positions(tag)
+                if not positions:
+                    raise ValueError("PaddleOCR section has no page position")
+                page_numbers = {pn for pns, *_ in positions for pn in pns}
+                for pn in sorted(page_numbers):
+                    if not 0 <= pn < pdf_parser.page_to - pdf_parser.page_from:
+                        raise ValueError("PaddleOCR section page is outside the requested range")
+                    page_texts[pn].append(text)
+            images = pdf_parser.page_images or []
+            page_sections = [(pn, "\n\n".join(texts), images[pn] if pn < len(images) else None) for pn, texts in sorted(page_texts.items())]
+        else:
+            page_sections = [(pn, txt, img) for pn, (txt, img) in enumerate(sections)]
+
+        for pn, txt, img in page_sections:
             d = copy.deepcopy(doc)
             pn += from_page
             if not is_image_like(img):

@@ -30,6 +30,7 @@ import numpy as np
 import pdfplumber
 import requests
 from PIL import Image
+from pypdf import PdfReader, PdfWriter
 
 from common.constants import MAXIMUM_PAGE_NUMBER
 
@@ -260,6 +261,8 @@ class PaddleOCRParser(RAGFlowPdfParser):
         callback: Optional[Callable[[float, str], None]] = None,
         *,
         parse_method: str = "raw",
+        from_page: int = 0,
+        to_page: int = MAXIMUM_PAGE_NUMBER,
         base_url: Optional[str] = None,
         access_token: Optional[str] = None,
         algorithm: Optional[AlgorithmType] = None,
@@ -299,15 +302,29 @@ class PaddleOCRParser(RAGFlowPdfParser):
         if not cfg.base_url:
             raise RuntimeError("[PaddleOCR] Base URL missing")
 
-        # Prepare file data and generate page images for cropping
+        # Upload only this task's zero-based, half-open page range. Position
+        # tags remain local to the uploaded PDF; crop() adds page_from back.
         data_bytes = self._prepare_file_data(filepath, binary)
+        reader = PdfReader(BytesIO(data_bytes))
+        end_page = min(to_page, len(reader.pages))
+        if from_page < 0 or from_page >= end_page:
+            raise ValueError(f"[PaddleOCR] invalid page range: {from_page}:{to_page}")
+        if from_page or end_page < len(reader.pages):
+            writer = PdfWriter()
+            for page in reader.pages[from_page:end_page]:
+                writer.add_page(page)
+            output = BytesIO()
+            writer.write(output)
+            data_bytes = output.getvalue()
 
         # Generate page images for cropping functionality
-        input_source = filepath if binary is None else binary
+        self.page_images = []
         try:
-            self.__images__(input_source, callback=callback)
+            self.__images__(data_bytes, callback=callback)
         except Exception as e:
             self.logger.warning(f"[PaddleOCR] Failed to generate page images for cropping: {e}")
+        self.page_from = from_page
+        self.page_to = end_page
 
         # Build and send request
         result = self._send_request(data_bytes, cfg, callback)

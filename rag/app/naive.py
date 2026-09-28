@@ -331,6 +331,12 @@ def by_paddleocr(
     tenant_id: str | None = None,
     **kwargs,
 ):
+    def report_parse_progress(prog=None, msg=""):
+        # OCR's 100% only completes parsing, not enrichment, embedding or indexing.
+        if prog is not None and prog >= 0:
+            prog = 0.1 + 0.6 * min(prog, 1.0)
+        callback(prog, msg)
+
     pdf_parser = None
     if tenant_id:
         if not paddleocr_llm_name:
@@ -347,13 +353,16 @@ def by_paddleocr(
                 sections, tables = pdf_parser.parse_pdf(
                     filepath=filename,
                     binary=binary,
-                    callback=callback,
+                    from_page=from_page,
+                    to_page=to_page,
+                    callback=report_parse_progress if callback else None,
                     parse_method=parse_method,
                     **kwargs,
                 )
                 return sections, tables, pdf_parser
             except Exception as e:
                 logging.error(f"Failed to parse pdf via LLMBundle PaddleOCR ({paddleocr_llm_name}): {e}")
+                raise
 
         return None, None, None
 
