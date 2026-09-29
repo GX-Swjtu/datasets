@@ -305,9 +305,12 @@ class Agent(LLM, ToolBase):
                 yield fit_error
             return
 
-        need2cite = self._param.cite and self._canvas.get_reference()["chunks"] and self._id.find("-->") < 0
+        # Retrieval tools mutate chunks while streaming. Snapshot the decision so an
+        # already emitted stream cannot switch to a second citation pass midway.
+        need2cite = bool(self._param.cite and self._canvas.get_reference()["chunks"] and self._id.find("-->") < 0)
         cited = False
-        if need2cite and len(msg) < 7:
+        if self._param.cite and self._id.find("-->") < 0 and (not need2cite or len(msg) < 7):
+            # Tools may retrieve the first sources later in this same model call.
             self._append_system_prompt(msg, citation_prompt())
             cited = True
 
@@ -352,6 +355,11 @@ class Agent(LLM, ToolBase):
         self.set_output("content", cited_answer)
 
     async def _gen_citations_async(self, text):
+        # Cite the final answer, never the draft reasoning or earlier tool rounds.
+        text = re.sub(r"^.*</think>", "", text, flags=re.DOTALL)
+        text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL).strip()
+        if not text:
+            return
         retrievals = self._canvas.get_reference()
         retrievals = {"chunks": list(retrievals["chunks"].values()), "doc_aggs": list(retrievals["doc_aggs"].values())}
         formated_refer = kb_prompt(retrievals, self.chat_mdl.max_length, True)
