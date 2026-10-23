@@ -30,6 +30,7 @@ from api.db.joint_services import memory_message_service
 from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type, resolve_model_config
 from common import settings
 from common.connection_utils import timeout
+from common.misc_utils import thread_pool_exec
 from rag.app.tag import label_question
 from rag.prompts.generator import cross_languages, kb_prompt, memory_prompt
 
@@ -208,7 +209,7 @@ class Retrieval(ToolBase, ABC):
                     return
                 if cks:
                     kbinfos["chunks"] = cks
-            kbinfos["chunks"] = settings.retriever.retrieval_by_children(kbinfos["chunks"], [kb.tenant_id for kb in kbs])
+            kbinfos["chunks"] = await thread_pool_exec(settings.retriever.retrieval_by_children, kbinfos["chunks"], [kb.tenant_id for kb in kbs])
             if self._param.use_kg:
                 tenant_id = self._canvas.get_tenant_id()
                 chat_model_config = get_tenant_default_model_by_type(tenant_id, LLMType.CHAT)

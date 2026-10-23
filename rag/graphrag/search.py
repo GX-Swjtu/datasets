@@ -21,7 +21,7 @@ from copy import deepcopy
 import json_repair
 import pandas as pd
 
-from common.misc_utils import get_uuid
+from common.misc_utils import get_uuid, thread_pool_exec
 from rag.graphrag.query_analyze_prompt import PROMPTS
 from rag.graphrag.utils import get_entity_type2samples, get_llm_cache, set_llm_cache, get_relation
 from common.token_utils import num_tokens_from_string
@@ -34,13 +34,13 @@ from common.doc_store.doc_store_base import OrderByExpr
 
 class KGSearch(Dealer):
     async def _chat(self, llm_bdl, system, history, gen_conf):
-        response = get_llm_cache(llm_bdl.llm_name, system, history, gen_conf)
+        response = await thread_pool_exec(get_llm_cache, llm_bdl.llm_name, system, history, gen_conf)
         if response:
             return response
         response = await llm_bdl.async_chat(system, history, gen_conf)
         if response.find("**ERROR**") >= 0:
             raise Exception(response)
-        set_llm_cache(llm_bdl.llm_name, system, response, history, gen_conf)
+        await thread_pool_exec(set_llm_cache, llm_bdl.llm_name, system, response, history, gen_conf)
         return response
 
     async def query_rewrite(self, llm, question, idxnms, kb_ids):
@@ -113,7 +113,7 @@ class KGSearch(Dealer):
         filters = deepcopy(filters)
         filters["knowledge_graph_kwd"] = "entity"
         matchDense = await self.get_vector(", ".join(keywords), emb_mdl, top_k=1024, num_candidates=2048, similarity=sim_thr)
-        es_res = self.dataStore.search(["content_with_weight", "entity_kwd", "rank_flt", "n_hop_with_weight"], [], filters, [matchDense], OrderByExpr(), 0, N, idxnms, kb_ids)
+        es_res = await thread_pool_exec(self.dataStore.search, ["content_with_weight", "entity_kwd", "rank_flt", "n_hop_with_weight"], [], filters, [matchDense], OrderByExpr(), 0, N, idxnms, kb_ids)
         return self._ent_info_from_(es_res, sim_thr)
 
     async def get_relevant_relations_by_txt(self, txt, filters, idxnms, kb_ids, emb_mdl, sim_thr=0.3, N=56):
@@ -122,7 +122,7 @@ class KGSearch(Dealer):
         filters = deepcopy(filters)
         filters["knowledge_graph_kwd"] = "relation"
         matchDense = await self.get_vector(txt, emb_mdl, top_k=1024, num_candidates=2048, similarity=sim_thr)
-        es_res = self.dataStore.search(["content_with_weight", "_score", "from_entity_kwd", "to_entity_kwd", "weight_int"], [], filters, [matchDense], OrderByExpr(), 0, N, idxnms, kb_ids)
+        es_res = await thread_pool_exec(self.dataStore.search, ["content_with_weight", "_score", "from_entity_kwd", "to_entity_kwd", "weight_int"], [], filters, [matchDense], OrderByExpr(), 0, N, idxnms, kb_ids)
         return self._relation_info_from_(es_res, sim_thr)
 
     def get_relevant_ents_by_types(self, types, filters, idxnms, kb_ids, N=56):
@@ -166,7 +166,7 @@ class KGSearch(Dealer):
             pass
 
         ents_from_query = await self.get_relevant_ents_by_keywords(ents, filters, idxnms, kb_ids, emb_mdl, ent_sim_threshold)
-        ents_from_types = self.get_relevant_ents_by_types(ty_kwds, filters, idxnms, kb_ids, 10000)
+        ents_from_types = await thread_pool_exec(self.get_relevant_ents_by_types, ty_kwds, filters, idxnms, kb_ids, 10000)
         rels_from_txt = await self.get_relevant_relations_by_txt(qst, filters, idxnms, kb_ids, emb_mdl, rel_sim_threshold)
         nhop_pathes = defaultdict(dict)
         for _, ent in ents_from_query.items():
@@ -261,7 +261,7 @@ class KGSearch(Dealer):
         return {
             "chunk_id": get_uuid(),
             "content_ltks": "",
-            "content_with_weight": ents + relas + self._community_retrieval_([n for n, _ in ents_from_query], filters, kb_ids, idxnms, comm_topn, max_token),
+            "content_with_weight": ents + relas + await thread_pool_exec(self._community_retrieval_, [n for n, _ in ents_from_query], filters, kb_ids, idxnms, comm_topn, max_token),
             "doc_id": "",
             "docnm_kwd": "Related content in Knowledge Graph",
             "kb_id": kb_ids,

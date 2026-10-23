@@ -31,6 +31,7 @@ from api.db.joint_services.tenant_model_service import resolve_model_config, res
 from api.db.services.llm_service import LLMBundle
 from api.db.services.mcp_server_service import MCPServerService
 from common.connection_utils import timeout
+from common.misc_utils import thread_pool_exec
 from common.mcp_tool_call_conn import MCPToolBinding, MCPToolCallSession, mcp_tool_metadata_to_openai_tool
 from rag.prompts.generator import citation_plus, citation_prompt, full_question, kb_prompt, message_fit_in, structured_output_prompt
 
@@ -290,7 +291,7 @@ class Agent(LLM, ToolBase):
         if len(msg) > 3:
             st = timer()
             user_request = await full_question(messages=msg, chat_mdl=self.chat_mdl)
-            self.callback("Multi-turn conversation optimization", {}, user_request, elapsed_time=timer() - st)
+            await thread_pool_exec(self.callback, "Multi-turn conversation optimization", {}, user_request, elapsed_time=timer() - st)
             msg = [*msg[:-1], {"role": "user", "content": user_request}]
 
         msg, fit_error = self._fit_messages(prompt, msg)
@@ -351,7 +352,7 @@ class Agent(LLM, ToolBase):
         if artifact_md:
             yield "\n\n" + artifact_md
             cited_answer += "\n\n" + artifact_md
-        self.callback("gen_citations", {}, cited_answer, elapsed_time=timer() - st)
+        await thread_pool_exec(self.callback, "gen_citations", {}, cited_answer, elapsed_time=timer() - st)
         self.set_output("content", cited_answer)
 
     async def _gen_citations_async(self, text):

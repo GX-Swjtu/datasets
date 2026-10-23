@@ -146,6 +146,9 @@ def _get_user_nickname(user_id: str) -> str:
 
 def _build_sse_response(body):
     resp = Response(body, mimetype="text/event-stream")
+    # SSE lifetime is governed by tool/model deadlines and client disconnects,
+    # not Quart's wall-clock limit for a complete ordinary HTTP response.
+    resp.timeout = None
     resp.headers.add_header("Cache-control", "no-cache")
     resp.headers.add_header("Connection", "keep-alive")
     resp.headers.add_header("X-Accel-Buffering", "no")

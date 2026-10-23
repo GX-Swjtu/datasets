@@ -71,10 +71,22 @@ class LLMToolPluginCallSession(ToolCallSession):
         """Invoke a tool asynchronously, applying the default timeout when needed."""
         request_timeout = self.default_timeout if request_timeout is None else request_timeout
         assert name in self.tools_map, f"LLM tool {name} does not exist"
-        logging.info(f"[ToolCall] invoke name={name} arguments={str(arguments)[:200]} request_timeout={request_timeout}")
         if not isinstance(arguments, Mapping):
             raise TypeError(f"Tool arguments for {name} must be an object, got {type(arguments).__name__}")
         st = timer()
+        logging.info("[ToolCall] invoke name=%s request_timeout=%s", name, request_timeout)
+        try:
+            # Enforce the same deadline for local async/sync tools and MCP.
+            # The component timeout decorator is optional and cannot enforce it.
+            return await asyncio.wait_for(self._invoke_tool(name, arguments, request_timeout, st), timeout=request_timeout)
+        except TimeoutError as exc:
+            logging.warning("[ToolCall] timeout name=%s elapsed=%.2fs", name, timer() - st)
+            raise TimeoutError(f"Tool '{name}' timed out after {request_timeout:g} seconds.") from exc
+        except asyncio.CancelledError:
+            logging.info("[ToolCall] cancelled name=%s elapsed=%.2fs", name, timer() - st)
+            raise
+
+    async def _invoke_tool(self, name, arguments, request_timeout, st):
         tool_obj = self.tools_map[name]
         if isinstance(tool_obj, MCPToolBinding):
             resp = await thread_pool_exec(tool_obj.session.tool_call, tool_obj.original_name, arguments, request_timeout)
@@ -101,8 +113,10 @@ class LLMToolPluginCallSession(ToolCallSession):
                 logging.warning(f"[ToolCall] resp is None and output fallback failed name={name} err={e}")
 
         elapsed = timer() - st
-        logging.info(f"[ToolCall] done name={name} elapsed={elapsed:.2f}s result={str(resp)[:200]}")
-        self.callback(name, arguments, resp, elapsed_time=elapsed)
+        # The trace callback can use synchronous Redis I/O. Keep it within the
+        # deadline without blocking the event loop's timeout/cancellation task.
+        await thread_pool_exec(self.callback, name, arguments, resp, elapsed_time=elapsed)
+        logging.info("[ToolCall] done name=%s elapsed=%.2fs", name, timer() - st)
         return resp
 
     def get_tool_obj(self, name):

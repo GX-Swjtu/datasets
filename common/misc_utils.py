@@ -253,23 +253,26 @@ async def thread_pool_exec(func, *args, **kwargs):
     # is awaited repeatedly inside one event loop.
     loop = asyncio.get_running_loop()
     ctx = contextvars.copy_context()
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
         if kwargs:
             inner = functools.partial(func, *args, **kwargs)
             return await loop.run_in_executor(executor, ctx.run, inner)
         return await loop.run_in_executor(executor, ctx.run, func, *args)
+    finally:
+        # A running sync call cannot be interrupted by Python. Do not block the
+        # event loop in shutdown(wait=True) when its awaiting task is cancelled.
+        # The worker exits after its own I/O timeout; queued work is discarded.
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def thread_pool_exec_long_time(func, *args, **kwargs):
     """Run long blocking work in a shared bounded executor.
 
     Use this for synchronous work that can outlive the HTTP request, such as
-    large document or dataset cleanup. Do not use ``thread_pool_exec`` for
-    those paths: it creates a temporary executor with a ``with`` block, and
-    leaving that block calls ``shutdown(wait=True)``. If the client disconnects
-    or the HTTP request times out while the worker is still running, request
-    cancellation can unwind the coroutine into that shutdown path and wait for
-    the long worker to finish anyway.
+    large document or dataset cleanup. Unlike ``thread_pool_exec``, this helper
+    bounds the number of long-running workers across calls, including workers
+    that continue after their awaiting request is cancelled.
 
     This helper uses a process-level executor instead, so there is no per-call
     executor shutdown during request cancellation. The running sync callable is

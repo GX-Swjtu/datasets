@@ -68,6 +68,8 @@ def _install_rag_llm_stub():
         MiniMax = "MiniMax"
         ZHIPU_AI = "ZHIPU-AI"
         OpenAI = "OpenAI"
+        DeepSeek = "DeepSeek"
+        Anthropic = "Anthropic"
         Azure_OpenAI = "Azure-OpenAI"
         HunYuan = "Tencent Hunyuan"
 

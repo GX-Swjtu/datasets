@@ -21,6 +21,7 @@ import inspect
 import json
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -97,6 +98,7 @@ class Graph:
         self.task_id = task_id if task_id else get_uuid()
         self.custom_header = custom_header
         self._thread_pool = ThreadPoolExecutor(max_workers=5)
+        self._tool_trace_lock = threading.Lock()
         self.load()
 
     def load(self):
@@ -1020,16 +1022,19 @@ class Canvas(Graph):
         agent_name = self.get_component_name(agent_ids[0])
         path = agent_name if len(agent_ids) < 2 else agent_name + "-->" + "-->".join(agent_ids[1:])
         try:
-            bin = REDIS_CONN.get(f"{self.task_id}-{self.message_id}-logs")
-            if bin:
-                obj = json.loads(bin.encode("utf-8"))
-                if obj[-1]["component_id"] == agent_ids[0]:
-                    obj[-1]["trace"].append({"path": path, "tool_name": func_name, "arguments": params, "result": result, "elapsed_time": elapsed_time})
+            # Every Agent node in this canvas writes the same Redis record.
+            # Serialize its read/modify/write across offloaded callbacks.
+            with self._tool_trace_lock:
+                bin = REDIS_CONN.get(f"{self.task_id}-{self.message_id}-logs")
+                if bin:
+                    obj = json.loads(bin.encode("utf-8"))
+                    if obj[-1]["component_id"] == agent_ids[0]:
+                        obj[-1]["trace"].append({"path": path, "tool_name": func_name, "arguments": params, "result": result, "elapsed_time": elapsed_time})
+                    else:
+                        obj.append({"component_id": agent_ids[0], "trace": [{"path": path, "tool_name": func_name, "arguments": params, "result": result, "elapsed_time": elapsed_time}]})
                 else:
-                    obj.append({"component_id": agent_ids[0], "trace": [{"path": path, "tool_name": func_name, "arguments": params, "result": result, "elapsed_time": elapsed_time}]})
-            else:
-                obj = [{"component_id": agent_ids[0], "trace": [{"path": path, "tool_name": func_name, "arguments": params, "result": result, "elapsed_time": elapsed_time}]}]
-            REDIS_CONN.set_obj(f"{self.task_id}-{self.message_id}-logs", obj, 60 * 10)
+                    obj = [{"component_id": agent_ids[0], "trace": [{"path": path, "tool_name": func_name, "arguments": params, "result": result, "elapsed_time": elapsed_time}]}]
+                REDIS_CONN.set_obj(f"{self.task_id}-{self.message_id}-logs", obj, 60 * 10)
         except Exception as e:
             logging.exception(e)
 
