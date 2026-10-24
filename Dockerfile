@@ -1,10 +1,7 @@
-# syntax=registry.ngl.test:5000/ngl/upstream/dockerfile:1.7-a57df69d0ea8@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
-
-# Explicitly updated mirrors of the verified upstream build inputs.
-FROM registry.ngl.test:5000/ngl/upstream/ragflow-deps:v0.27.1-e69762c256ea@sha256:e69762c256ea2338a786a9b2f003da8e91e5e69b26bb6797c2206276ce32e5ff AS ragflow-deps
+# syntax=docker/dockerfile:1.7
 
 # base stage
-FROM registry.ngl.test:5000/ngl/upstream/ubuntu:24.04-224a1869083a@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254 AS base
+FROM ubuntu:24.04 AS base
 USER root
 SHELL ["/bin/bash", "-c"]
 
@@ -19,7 +16,7 @@ WORKDIR /ragflow
 
 # copy models downloaded via download_deps.py
 RUN mkdir -p /ragflow/rag/res/deepdoc /root/.ragflow
-RUN --mount=type=bind,from=ragflow-deps,source=/huggingface.co,target=/huggingface.co \
+RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/huggingface.co,target=/huggingface.co \
     tar --exclude='.*' -cf - \
         /huggingface.co/InfiniFlow/text_concat_xgb_v1.0 \
         /huggingface.co/InfiniFlow/deepdoc \
@@ -27,7 +24,7 @@ RUN --mount=type=bind,from=ragflow-deps,source=/huggingface.co,target=/huggingfa
 
 # https://github.com/chrismattmann/tika-python
 # This is the only way to run python-tika without internet access. Without this set, the default is to check the tika version and pull latest every time from Apache.
-RUN --mount=type=bind,from=ragflow-deps,source=/,target=/deps \
+RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps \
     cp -r /deps/nltk_data /root/ && \
     cp /deps/tika-server-standard-3.3.0.jar /deps/tika-server-standard-3.3.0.jar.md5 /ragflow/ && \
     cp /deps/cl100k_base.tiktoken /ragflow/9b5ad71b2ce5302211f9c61530b329a4922fc6a4
@@ -85,7 +82,7 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     apt-mark hold nginx
 
 # Install uv
-RUN --mount=type=bind,from=ragflow-deps,source=/,target=/deps \
+RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps \
     if [ "$NEED_MIRROR" == "1" ]; then \
         mkdir -p /etc/uv && \
         echo 'python-install-mirror = "https://registry.npmmirror.com/-/binary/python-build-standalone/"' > /etc/uv/uv.toml && \
@@ -142,7 +139,7 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
 # cache path that `local.go:cacheDir()` constructs at runtime —
 # `/root/.cache/stagehand/lib/go_<ver>/stagehand-server-v3-<arch>`.
 ARG STAGEHAND_GO_VERSION=v3.21.0
-RUN --mount=type=bind,from=ragflow-deps,source=/,target=/deps \
+RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps \
     set -eux; \
     arch="$(uname -m)"; \
     case "$arch" in \
@@ -178,16 +175,16 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
 
 
 # Add dependencies of selenium
-RUN --mount=type=bind,from=ragflow-deps,source=/chrome-linux64-121-0-6167-85,target=/chrome-linux64.zip \
+RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/chrome-linux64-121-0-6167-85,target=/chrome-linux64.zip \
     unzip /chrome-linux64.zip && \
     mv chrome-linux64 /opt/chrome && \
     ln -s /opt/chrome/chrome /usr/local/bin/
-RUN --mount=type=bind,from=ragflow-deps,source=/chromedriver-linux64-121-0-6167-85,target=/chromedriver-linux64.zip \
+RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/chromedriver-linux64-121-0-6167-85,target=/chromedriver-linux64.zip \
     unzip -j /chromedriver-linux64.zip chromedriver-linux64/chromedriver && \
     mv chromedriver /usr/local/bin/ && \
     rm -f /usr/bin/google-chrome
 
-RUN --mount=type=bind,from=ragflow-deps,source=/,target=/deps \
+RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps \
     if [ "$(uname -m)" = "x86_64" ]; then \
         dpkg -i /deps/libssl1.1_1.1.1f-1ubuntu2_amd64.deb; \
     elif [ "$(uname -m)" = "aarch64" ]; then \
