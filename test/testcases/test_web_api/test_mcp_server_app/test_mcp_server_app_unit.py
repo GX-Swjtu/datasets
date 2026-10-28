@@ -271,6 +271,45 @@ def _load_mcp_api(monkeypatch):
 
 
 @pytest.mark.p2
+def test_internal_mcp_exact_url_exception_keeps_other_destinations_guarded(monkeypatch):
+    module = _load_mcp_api(monkeypatch)
+    url = "http://auth-directory-mcp.ngl-development.svc.cluster.local:8000/mcp"
+    monkeypatch.setenv("MCP_TRUSTED_INTERNAL_URL", url)
+    calls = []
+
+    def public_guard(value):
+        calls.append(value)
+        raise ValueError("non-public address blocked")
+
+    monkeypatch.setattr(module, "assert_url_is_safe", public_guard)
+    monkeypatch.setattr(module.socket, "getaddrinfo", lambda *_args, **_kwargs: [(2, 1, 6, "", ("10.43.12.34", 8000))])
+    assert module._assert_mcp_url_is_safe(url) == ("auth-directory-mcp.ngl-development.svc.cluster.local", "10.43.12.34", None)
+    for other in (url + "?x=1", url + "/extra", url.replace(":8000", ":9090"), url.replace("auth-directory-mcp", "auth"), url.replace("ngl-development", "ngl-production")):
+        assert module._assert_mcp_url_is_safe(other)[2] == "non-public address blocked"
+    assert len(calls) == 5
+    monkeypatch.delenv("MCP_TRUSTED_INTERNAL_URL")
+    assert module._assert_mcp_url_is_safe(url)[2] == "non-public address blocked"
+
+
+@pytest.mark.p2
+@pytest.mark.parametrize("address", ["127.0.0.1", "169.254.169.254", "0.0.0.0", "224.0.0.1", "8.8.8.8", "::1", "::ffff:127.0.0.1"])
+def test_internal_mcp_rejects_unsafe_dns_answers(monkeypatch, address):
+    module = _load_mcp_api(monkeypatch)
+    url = "http://auth-directory-mcp.ngl-development.svc.cluster.local:8000/mcp"
+    monkeypatch.setenv("MCP_TRUSTED_INTERNAL_URL", url)
+    monkeypatch.setattr(module.socket, "getaddrinfo", lambda *_args, **_kwargs: [(2, 1, 6, "", ("10.43.12.34", 8000)), (2, 1, 6, "", (address, 8000))])
+    assert module._assert_mcp_url_is_safe(url)[2] is not None
+
+
+@pytest.mark.p2
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8000/mcp", "http://u:p@auth.ns.svc.cluster.local/mcp", "http://auth.ns.svc.cluster.local/mcp?x=1", "http://auth.ns.svc.cluster.local/mcp#x", "ftp://auth.ns.svc.cluster.local/mcp"])
+def test_internal_mcp_rejects_invalid_trust_configuration(monkeypatch, url):
+    module = _load_mcp_api(monkeypatch)
+    monkeypatch.setenv("MCP_TRUSTED_INTERNAL_URL", url)
+    assert module._assert_mcp_url_is_safe(url)[2] is not None
+
+
+@pytest.mark.p2
 def test_list_mcp_desc_pagination_and_exception(monkeypatch):
     module = _load_mcp_api(monkeypatch)
 

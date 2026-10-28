@@ -7,7 +7,7 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -31,6 +31,11 @@ def agent_module(monkeypatch):
     _stub(monkeypatch, "common.connection_utils", timeout=lambda *_args: lambda function: function)
     _stub(monkeypatch, "common.mcp_tool_call_conn", MCPToolBinding=object, MCPToolCallSession=object, mcp_tool_metadata_to_openai_tool=Mock())
 
+    async def thread_pool_exec(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    _stub(monkeypatch, "common.misc_utils", thread_pool_exec=thread_pool_exec)
+
     async def full_question(*, messages, chat_mdl):
         return messages[-1]["content"]
 
@@ -53,9 +58,10 @@ def agent_module(monkeypatch):
 
 def _agent(module, reference, *, cite=True, nested=False):
     agent = module.Agent.__new__(module.Agent)
-    agent._param = SimpleNamespace(cite=cite)
+    agent._param = module.AgentParam()
+    agent._param.cite = cite
     agent._id = "Agent:root-->child" if nested else "Agent:root"
-    agent._canvas = SimpleNamespace(get_reference=lambda: reference)
+    agent._canvas = SimpleNamespace(get_reference=lambda: reference, globals={})
     agent.chat_mdl = SimpleNamespace(max_length=8192)
     agent._fit_messages = lambda _prompt, messages: (messages, None)
     agent.check_if_canceled = lambda _stage: False
@@ -71,6 +77,69 @@ def _messages(turns=1):
         + [message for _ in range(turns - 1) for message in [{"role": "user", "content": "prior"}, {"role": "assistant", "content": "prior answer"}]]
         + [{"role": "user", "content": "hello"}]
     )
+
+
+@pytest.mark.parametrize("attachment", [None, "notes.md", "minutes.docx"])
+def test_multiturn_keeps_history_and_attachment_without_rewriting_by_default(agent_module, monkeypatch, attachment):
+    agent = _agent(agent_module, {"chunks": {}, "doc_aggs": {}}, cite=False)
+    rewrite = AsyncMock(side_effect=AssertionError("Question rewriting must be opt-in"))
+    monkeypatch.setattr(agent_module, "full_question", rewrite)
+    messages = _messages(turns=3)
+    messages[-1]["content"] = "请描述这个文档的内容"
+    if attachment:
+        document = f"File: {attachment}\n项目会议纪要：周五完成联调。\n<table><tr><td>负责人</td><td>测试人员</td></tr></table>"
+        agent._canvas.globals["sys.files"] = [document]
+        messages[-1]["content"] += "\n\n" + document
+    expected = deepcopy(messages)
+    captured = []
+
+    async def generate(current):
+        captured.append(deepcopy(current))
+        yield "根据所附资料回答"
+
+    agent._generate_streamly = generate
+
+    async def collect():
+        return "".join([part async for part in agent.stream_output_with_tools_async("SYSTEM", messages)])
+
+    assert asyncio.run(collect()) == "根据所附资料回答"
+    assert captured == [expected]
+    assert messages == expected
+    rewrite.assert_not_awaited()
+    agent.callback.assert_not_called()
+
+
+@pytest.mark.parametrize("attachment", [None, "File: minutes.docx\n会议正文", "data:image/png;base64,AAAA"])
+def test_explicit_rewrite_only_applies_to_text_only_multiturn(agent_module, monkeypatch, attachment):
+    agent = _agent(agent_module, {"chunks": {}, "doc_aggs": {}}, cite=False)
+    agent._param.enable_question_rewrite = True
+    if attachment:
+        agent._canvas.globals["sys.files"] = [attachment]
+    rewrite = AsyncMock(return_value="请说明项目的验收条件")
+    monkeypatch.setattr(agent_module, "full_question", rewrite)
+    messages = _messages(turns=3)
+    messages[-1]["content"] = "它的验收条件是什么？" + ("\n\n" + attachment if attachment else "")
+    expected = deepcopy(messages)
+    captured = []
+
+    async def generate(current):
+        captured.append(deepcopy(current))
+        yield "答案"
+
+    agent._generate_streamly = generate
+
+    async def collect():
+        return "".join([part async for part in agent.stream_output_with_tools_async("SYSTEM", messages)])
+
+    assert asyncio.run(collect()) == "答案"
+    if attachment:
+        rewrite.assert_not_awaited()
+        agent.callback.assert_not_called()
+    else:
+        rewrite.assert_awaited_once()
+        agent.callback.assert_called_once()
+        expected[-1]["content"] = "请说明项目的验收条件"
+    assert captured == [expected]
 
 
 @pytest.mark.parametrize("cite,nested", [(True, False), (False, False), (True, True)])

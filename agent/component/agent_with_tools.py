@@ -71,6 +71,7 @@ class AgentParam(LLMParam, ToolParamBase):
         self.description = ""
         self.custom_header = {}
         self.tool_timeout = 10
+        self.enable_question_rewrite = False
 
 
 class Agent(LLM, ToolBase):
@@ -288,7 +289,8 @@ class Agent(LLM, ToolBase):
         return ans
 
     async def stream_output_with_tools_async(self, prompt, msg, user_defined_prompt={}):
-        if len(msg) > 3:
+        # Rewriting replaces the last message, so never rewrite attached source text.
+        if self._param.enable_question_rewrite is True and len(msg) > 3 and not self._canvas.globals.get("sys.files"):
             st = timer()
             user_request = await full_question(messages=msg, chat_mdl=self.chat_mdl)
             await thread_pool_exec(self.callback, "Multi-turn conversation optimization", {}, user_request, elapsed_time=timer() - st)

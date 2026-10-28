@@ -14,6 +14,11 @@
 #  limitations under the License.
 #
 
+import ipaddress
+import os
+import socket
+from urllib.parse import urlsplit
+
 from quart import Response, request
 
 from api.apps import current_user, login_required
@@ -61,7 +66,34 @@ def _assert_mcp_url_is_safe(url, invalid_message: str = "Invalid url.") -> tuple
     if not isinstance(url, str) or not url:
         return "", "", invalid_message
     try:
+        # A deployment-owned, exact URL permits the internal directory service only.
+        # Keep every other MCP destination behind the normal public-address guard.
+        if url == os.environ.get("MCP_TRUSTED_INTERNAL_URL", ""):
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or not parsed.hostname.endswith(".svc.cluster.local")
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("Invalid trusted internal MCP URL.")
+            addresses = socket.getaddrinfo(parsed.hostname, parsed.port, type=socket.SOCK_STREAM)
+            validated = []
+            for address in addresses:
+                ip = ipaddress.ip_address(address[4][0])
+                effective = getattr(ip, "ipv4_mapped", None) or ip
+                if not effective.is_private or any((effective.is_loopback, effective.is_link_local, effective.is_multicast, effective.is_reserved, effective.is_unspecified)):
+                    raise ValueError("Trusted internal MCP URL resolved outside the private service network.")
+                validated.append(str(ip))
+            if not validated:
+                raise ValueError("Trusted internal MCP URL has no address.")
+            return parsed.hostname, validated[0], None
         hostname, resolved_ip = assert_url_is_safe(url)
+    except socket.gaierror:
+        return "", "", "Could not resolve trusted internal MCP service."
     except ValueError as exc:
         return "", "", str(exc)
     return hostname, resolved_ip, None
