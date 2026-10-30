@@ -21,6 +21,7 @@ const Menus = [
   {
     label: t('flow.search'),
     list: [
+      Operator.OASearch,
       Operator.TavilySearch,
       Operator.TavilyExtract,
       Operator.QueritContents,

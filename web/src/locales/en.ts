@@ -3292,6 +3292,8 @@ This process aggregates variables from multiple branches into a single variable 
       userFillUp: 'Await response',
       userFillUpDescription: `Pauses the workflow and waits for the user's message before continuing.`,
       codeExec: 'Code',
+      oASearch: 'OA knowledge search',
+      oASearchDescription: 'Search OA documents using the current employee permissions',
       tavilySearch: 'Tavily search',
       tavilySearchDescription: 'Search results via Tavily service.',
       queritSearch: 'Querit search',

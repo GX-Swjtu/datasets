@@ -137,6 +137,7 @@ export const useInitializeOperatorParams = () => {
     return {
       [Operator.Begin]: initialBeginValues,
       [Operator.Retrieval]: initialRetrievalValues,
+      [Operator.OASearch]: {},
       [Operator.Categorize]: {
         ...initialCategorizeValues,
         llm_id: llmId,

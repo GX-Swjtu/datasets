@@ -83,6 +83,7 @@ export const SVGIconMap = {
   [Operator.Crawler]: 'crawler',
 };
 export const LucideIconMap = {
+  [Operator.OASearch]: FileText,
   [Operator.DataOperations]: FileCode,
   [Operator.Loop]: InfinityIcon,
   [Operator.ExitLoop]: LogOut,

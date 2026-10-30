@@ -12,6 +12,8 @@ export function useAgentToolInitialValues() {
       const initialValues = initialFormValuesMap[operatorName];
 
       switch (operatorName) {
+        case Operator.OASearch:
+          return {};
         case Operator.Retrieval:
           return {
             ...omit(initialValues, 'query'),

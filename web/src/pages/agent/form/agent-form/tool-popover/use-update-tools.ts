@@ -52,7 +52,7 @@ export function useUpdateAgentNodeTools() {
                 ...tools,
                 {
                   component_name: value,
-                  name: value,
+                  name: value === Operator.OASearch ? 'search_oa_documents' : value,
                   params: initializeAgentToolValues(value as Operator),
                   id: generateAgentToolId(value),
                 },

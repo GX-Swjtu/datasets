@@ -110,6 +110,7 @@ export enum Operator {
   Agent = 'Agent',
   Tool = 'Tool',
   TavilySearch = 'TavilySearch',
+  OASearch = 'OASearch',
   TavilyExtract = 'TavilyExtract',
   QueritContents = 'QueritContents',
   QueritSearch = 'QueritSearch',

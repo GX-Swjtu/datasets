@@ -2870,6 +2870,8 @@ NER：使用 spaCy NER 和基于规则的关键词提取来抽取 Entities 和 R
       userFillUpDescription: `此组件会暂停当前的流程并等待用户发送消息，接收到消息之后再进行之后的流程。`,
 
       codeExec: '代码',
+      oASearch: 'OA知识库检索',
+      oASearchDescription: '按当前员工权限搜索 OA 文档并提供来源引用',
       tavilySearch: 'Tavily 搜索',
       tavilySearchDescription: '通过 Tavily 服务搜索结果',
       queritSearch: 'Querit 搜索',

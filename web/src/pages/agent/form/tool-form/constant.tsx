@@ -21,6 +21,7 @@ import WikipediaForm from './wikipedia-form';
 import YahooFinanceForm from './yahoo-finance-form';
 
 export const ToolFormConfigMap = {
+  [Operator.OASearch]: () => <p className="text-sm text-text-secondary">按当前登录员工的 OA 权限检索。身份与服务连接由平台管理，摘要为空时请引导用户打开原文。</p>,
   [Operator.Retrieval]: RetrievalForm,
   [Operator.Code]: () => <div></div>,
   [Operator.DuckDuckGo]: DuckDuckGoForm,
