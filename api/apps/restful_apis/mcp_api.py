@@ -42,6 +42,8 @@ def _get_mcp_ids_from_args() -> list[str]:
     return [mcp_id for mcp_id in mcp_ids.split(",") if mcp_id]
 
 
+from common.trusted_mcp import trusted_internal_urls
+
 def _export_mcp_servers(mcp_ids: list[str]) -> dict | None:
     exported_servers = {}
     for mcp_id in mcp_ids:
@@ -66,9 +68,9 @@ def _assert_mcp_url_is_safe(url, invalid_message: str = "Invalid url.") -> tuple
     if not isinstance(url, str) or not url:
         return "", "", invalid_message
     try:
-        # A deployment-owned, exact URL permits the internal directory service only.
+        # Deployment-owned exact URLs permit the directory and OA MCP services.
         # Keep every other MCP destination behind the normal public-address guard.
-        if url == os.environ.get("MCP_TRUSTED_INTERNAL_URL", ""):
+        if url in trusted_internal_urls():
             parsed = urlsplit(url)
             if (
                 parsed.scheme not in {"http", "https"}

@@ -27,6 +27,7 @@ from typing import Any, Literal, Protocol
 from typing_extensions import override
 
 from common.constants import MCPServerType
+from common.trusted_mcp import bound_context_headers
 from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
@@ -76,10 +77,12 @@ class MCPToolCallSession(ToolCallSession):
             if nh.strip() and nv.strip().strip("Bearer"):
                 headers[nh] = nv
 
+        expanded_context = {}
         for h, v in custom_header.items():
             nh = Template(h).safe_substitute(custom_header)
             nv = Template(v).safe_substitute(custom_header)
-            headers[nh] = nv
+            expanded_context[nh] = nv
+        headers = bound_context_headers(url, headers, expanded_context)
 
         if self._mcp_server.server_type == MCPServerType.SSE:
             # SSE transport

@@ -364,6 +364,9 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     user_id = kwargs.get("user_id", "")
     chat_template_kwargs = kwargs.get("chat_template_kwargs")
     custom_header = kwargs.get("custom_header", "")
+    runtime_message_id = str(uuid4())
+    if isinstance(custom_header, dict) and custom_header.get("X-NGL-Conversation-Id"):
+        custom_header = {**custom_header, "X-NGL-Message-Id": runtime_message_id}
     release_mode = str(kwargs.get("release", "")).strip().lower()
 
     if session_id:
@@ -398,9 +401,11 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
             return
         yield "data:" + json.dumps({"code": exc.status, "message": exc.code}) + "\n\n"
         return
-    message_id = managed.message_id if managed else str(uuid4())
+    message_id = managed.message_id if managed else runtime_message_id
     if managed:
         canvas.close()
+        if isinstance(custom_header, dict) and custom_header.get("X-NGL-Conversation-Id"):
+            custom_header = {**custom_header, "X-NGL-Message-Id": message_id}
         canvas = Canvas(json.dumps(managed.dsl, ensure_ascii=False), tenant_id, task_id=session_id,
                         canvas_id=agent_id, custom_header=custom_header)
         files = managed.files
@@ -417,8 +422,7 @@ async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     }
     if chat_template_kwargs is not None:
         run_kwargs["chat_template_kwargs"] = chat_template_kwargs
-    if managed:
-        run_kwargs["controlled_message_id"] = message_id
+    run_kwargs["controlled_message_id"] = message_id
 
     async def persist_progress():
         last_saved = None

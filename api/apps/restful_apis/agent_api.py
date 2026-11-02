@@ -33,7 +33,8 @@ from api.utils.file_response import (
     resolve_attachment_content_type,
 )
 import jwt
-from quart import Response, jsonify, request, make_response
+from quart import Response, jsonify, request, make_response, g
+from common.trusted_mcp import authenticated_context_headers
 
 from api.apps import AUTH_JWT, AUTH_API, AUTH_BETA, current_user, login_required
 from api.apps.services.canvas_replica_service import CanvasReplicaService
@@ -1485,6 +1486,9 @@ async def agent_chat_completion(tenant_id, agent_id=None):
     req = dict(req)
     req.pop("agent_id", None)
     req.pop("openai-compatible", None)
+    req["custom_header"] = authenticated_context_headers(
+        req.get("custom_header", {}), getattr(g, "auth_type", None), agent_id
+    )
     session_id = req.get("session_id")
     workflow_session = False
     workflow_conv = None
