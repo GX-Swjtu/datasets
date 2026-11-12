@@ -70,7 +70,7 @@ class AgentParam(LLMParam, ToolParamBase):
         self.max_rounds = 5
         self.description = ""
         self.custom_header = {}
-        self.tool_timeout = 10
+        self.tool_timeout = 60
         self.enable_question_rewrite = False
 
 
@@ -119,6 +119,11 @@ class Agent(LLM, ToolBase):
             self.chat_mdl.bind_tools(self.toolcall_session, self.tool_meta)
 
     def _fit_messages(self, prompt: str, msg: list[dict]) -> tuple[list[dict] | None, str | None]:
+        prompt += (
+            "\nFor tool calls, use the exact function names in the provided tools, "
+            "including numeric suffixes. Tool names mentioned in instructions or "
+            "conversation history may be shorthand; use the current tool definition."
+        )
         msg_fit, fit_error = LLM.fit_messages(prompt, msg, self.chat_mdl.max_length)
         if fit_error:
             logging.error("Agent prompt fit error: %s", fit_error)

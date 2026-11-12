@@ -90,12 +90,38 @@ def test_explicit_request_timeout_overrides_default(session_class):
     assert recording.timeouts == [2]
 
 
-def test_constructor_default_timeout_is_ten_seconds(session_class):
+def test_constructor_default_timeout_is_sixty_seconds(session_class):
     for configured in (None, 0, 0.5, -1):
         session, recording = _make_session(session_class, default_timeout=configured)
         result = asyncio.run(session.tool_call_async("transcribe_0", {}))
         assert result == "done"
-        assert recording.timeouts == [10]
+        assert recording.timeouts == [60]
+
+
+def test_unknown_tool_returns_exact_available_names_without_dispatch(session_class):
+    session, recording = _make_session(session_class)
+    registered_name = next(iter(session.tools_map))
+    with pytest.raises(ValueError, match="exact registered function name") as exc:
+        asyncio.run(session.tool_call_async("oa_search_documents", {}))
+    assert registered_name in str(exc.value)
+    assert not recording.timeouts
+
+
+def test_tool_name_instruction_is_added_before_token_budgeting():
+    source = Path(__file__).resolve().parents[3] / "agent/component/agent_with_tools.py"
+    agent = next(n for n in ast.parse(source.read_text()).body if isinstance(n, ast.ClassDef) and n.name == "Agent")
+    method = next(n for n in agent.body if isinstance(n, ast.FunctionDef) and n.name == "_fit_messages")
+    fit = Mock(return_value=([{"role": "system", "content": "fitted"}], None))
+    namespace = {"LLM": type("LLM", (), {"fit_messages": fit}), "logging": logging}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
+    self = Mock(chat_mdl=Mock(max_length=1000))
+    for _ in range(2):
+        namespace["_fit_messages"](self, "Use the OA search capability.", [])
+    for args in fit.call_args_list:
+        prompt = args.args[0]
+        assert prompt.startswith("Use the OA search capability.")
+        assert prompt.count("exact function names") == 1
+        assert "numeric suffixes" in prompt
 
 
 def test_tool_call_wrapper_uses_default_timeout(session_class):

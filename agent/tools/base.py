@@ -57,11 +57,11 @@ class LLMToolPluginCallSession(ToolCallSession):
             tools_map: Mapping from indexed tool name to tool object.
             callback: Callback invoked after each tool call.
             default_timeout: Timeout in seconds for a single tool call. ``None`` or
-                values below ``1`` fall back to ``10``.
+                values below ``1`` fall back to ``60``.
         """
         self.tools_map = tools_map
         self.callback = callback
-        self.default_timeout = 10 if default_timeout is None or default_timeout < 1 else float(default_timeout)
+        self.default_timeout = 60 if default_timeout is None or default_timeout < 1 else float(default_timeout)
 
     def tool_call(self, name: str, arguments: dict[str, Any], timeout: float | int | None = None) -> Any:
         """Synchronous wrapper for :meth:`tool_call_async`."""
@@ -70,7 +70,11 @@ class LLMToolPluginCallSession(ToolCallSession):
     async def tool_call_async(self, name: str, arguments: dict[str, Any], request_timeout: float | int | None = None) -> Any:
         """Invoke a tool asynchronously, applying the default timeout when needed."""
         request_timeout = self.default_timeout if request_timeout is None else request_timeout
-        assert name in self.tools_map, f"LLM tool {name} does not exist"
+        if name not in self.tools_map:
+            raise ValueError(
+                f"Unknown tool {name!r}. Use an exact registered function name, "
+                f"including its suffix: {', '.join(self.tools_map)}"
+            )
         if not isinstance(arguments, Mapping):
             raise TypeError(f"Tool arguments for {name} must be an object, got {type(arguments).__name__}")
         st = timer()

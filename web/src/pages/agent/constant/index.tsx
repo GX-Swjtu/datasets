@@ -516,7 +516,7 @@ export const initialAgentValues = {
   exception_default_value: '',
   tools: [],
   mcp: [],
-  tool_timeout: 10,
+  tool_timeout: 60,
   cite: true,
   showStructuredOutput: false,
   outputs: {

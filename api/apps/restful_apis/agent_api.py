@@ -315,7 +315,6 @@ async def _run_workflow_session(
 
         async def sse():
             nonlocal full_content, reference, final_ans, trace_items, structured_output
-            done_sent = False
             try:
                 async for ans in canvas.run(**run_kwargs):
                     ans["session_id"] = session_id
@@ -370,9 +369,8 @@ async def _run_workflow_session(
                 canvas.cancel_task()
                 yield ("data:" + json.dumps({"code": 500, "message": str(exc), "data": False}, ensure_ascii=False) + "\n\n")
             finally:
-                if not done_sent:
-                    done_sent = True
-                    yield "data:[DONE]\n\n"
+                await asyncio.to_thread(canvas.close)
+            yield "data:[DONE]\n\n"
 
         return _build_sse_response(sse())
 
@@ -405,6 +403,8 @@ async def _run_workflow_session(
         logging.exception(exc)
         canvas.cancel_task()
         return get_result(data=f"**ERROR**: {str(exc)}")
+    finally:
+        await asyncio.to_thread(canvas.close)
 
     if not final_ans:
         # Canvas produced no events (e.g. caller sent an empty query). The
@@ -1052,6 +1052,7 @@ def get_agent_component_input_form(agent_id, component_id, tenant_id):
 @_require_canvas_access_async
 async def debug_agent_component(agent_id, component_id, tenant_id):
     req = await get_request_json()
+    canvas = None
     try:
         from agent.canvas import Canvas
         from agent.component import LLM
@@ -1081,6 +1082,9 @@ async def debug_agent_component(agent_id, component_id, tenant_id):
         return get_json_result(data=outputs)
     except Exception as exc:
         return server_error_response(exc)
+    finally:
+        if canvas is not None:
+            await asyncio.to_thread(canvas.close)
 
 
 @manager.route("/agents/<agent_id>", methods=["GET"])  # noqa: F821

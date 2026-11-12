@@ -99,7 +99,12 @@ class Graph:
         self.custom_header = custom_header
         self._thread_pool = ThreadPoolExecutor(max_workers=5)
         self._tool_trace_lock = threading.Lock()
-        self.load()
+        self._closed = False
+        try:
+            self.load()
+        except BaseException:
+            self.close()
+            raise
 
     def load(self):
         self.components = self.dsl["components"]
@@ -172,18 +177,29 @@ class Graph:
     def close(self):
         from common.mcp_tool_call_conn import MCPToolBinding, MCPToolCallSession
 
+        if self._closed:
+            return
+        self._closed = True
         seen = set()
-        for cpn in self.components.values():
-            obj = cpn.get("obj")
-            if obj and hasattr(obj, "tools"):
-                for tool in obj.tools.values():
-                    session = tool if isinstance(tool, MCPToolCallSession) else (tool.session if isinstance(tool, MCPToolBinding) else None)
-                    if isinstance(session, MCPToolCallSession) and id(session) not in seen:
-                        seen.add(id(session))
-                        try:
-                            session.close_sync(timeout=3)
-                        except Exception:
-                            logging.exception("Error closing MCP session for server %s", session._mcp_server.id)
+        pending = [cpn.get("obj") for cpn in self.components.values()]
+        while pending:
+            obj = pending.pop()
+            if obj is None or id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            if isinstance(obj, MCPToolBinding):
+                pending.append(obj.session)
+            elif isinstance(obj, MCPToolCallSession):
+                try:
+                    obj.close_sync(timeout=3)
+                except Exception:
+                    logging.exception("Error closing MCP session")
+            else:
+                # Agents may themselves be tools of another Agent.
+                tools = getattr(obj, "tools", None)
+                if isinstance(tools, dict):
+                    pending.extend(tools.values())
+        self._thread_pool.shutdown(wait=False, cancel_futures=True)
 
     @staticmethod
     def _get_component_name(dsl, cid):

@@ -18,7 +18,6 @@ import asyncio
 import logging
 import threading
 import weakref
-from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from string import Template
@@ -59,11 +58,66 @@ class MCPToolCallSession(ToolCallSession):
         self._queue = asyncio.Queue()
         self._close = False
 
-        self._event_loop = asyncio.new_event_loop()
-        self._thread_pool = ThreadPoolExecutor(max_workers=1)
-        self._thread_pool.submit(self._event_loop.run_forever)
+        # Loading a canvas also constructs tools for metadata-only requests.
+        # Start network resources only when a tool is actually used.
+        self._event_loop = None
+        self._thread = None
+        self._server_task = None
+        self._lifecycle_lock = threading.Lock()
 
-        asyncio.run_coroutine_threadsafe(self._mcp_server_loop(), self._event_loop)
+    def _ensure_started(self) -> None:
+        with self._lifecycle_lock:
+            if self._close:
+                raise ValueError("Session is closed")
+            if self._thread is None:
+                self._event_loop = asyncio.new_event_loop()
+                self._server_task = self._event_loop.create_task(self._mcp_server_loop())
+                self._thread = threading.Thread(target=self._run_loop, name="mcp-session", daemon=True)
+                self._thread.start()
+
+    def _run_loop(self) -> None:
+        loop = self._event_loop
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._server_task)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logging.exception("MCP session worker failed")
+        finally:
+            with self._lifecycle_lock:
+                self._close = True
+            # Let transports exit their async contexts on their owning task,
+            # then drain outstanding callers before releasing the selector.
+            try:
+                # A submission queued just before closure may not yet have
+                # become a Task. Flush it before collecting pending tasks.
+                loop.run_until_complete(asyncio.sleep(0))
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.run_until_complete(loop.shutdown_default_executor(timeout=5))
+            finally:
+                loop.close()
+                self.__class__._ALL_INSTANCES.discard(self)
+
+    def _submit(self, coroutine_function, *args, **kwargs):
+        self._ensure_started()
+        with self._lifecycle_lock:
+            if self._close:
+                raise ValueError("Session is closed")
+            coroutine = coroutine_function(*args, **kwargs)
+            try:
+                return asyncio.run_coroutine_threadsafe(coroutine, self._event_loop)
+            except BaseException:
+                coroutine.close()
+                raise
+
+    def _request_close(self) -> None:
+        if self._server_task is not None and not self._server_task.done():
+            self._server_task.cancel()
 
     async def _mcp_server_loop(self) -> None:
         url = self._mcp_server.url.strip()
@@ -205,13 +259,11 @@ class MCPToolCallSession(ToolCallSession):
             raise
 
     def get_tools(self, timeout: float | int = 10) -> list[Tool]:
-        if self._close:
-            raise ValueError("Session is closed")
-
-        future = asyncio.run_coroutine_threadsafe(self._get_tools_from_mcp_server(request_timeout=timeout), self._event_loop)
+        future = self._submit(self._get_tools_from_mcp_server, request_timeout=timeout)
         try:
             return future.result(timeout=timeout)
         except FuturesTimeoutError:
+            future.cancel()
             msg = f"Timeout when fetching tools from MCP server: {self._mcp_server.id} (timeout={timeout})"
             logging.error(msg)
             raise RuntimeError(msg)
@@ -224,13 +276,13 @@ class MCPToolCallSession(ToolCallSession):
         if self._close:
             return "Error: Session is closed"
 
-        future = asyncio.run_coroutine_threadsafe(
-            self._call_mcp_tool(name, arguments, request_timeout=timeout),
-            self._event_loop,
-        )
+        future = None
         try:
+            future = self._submit(self._call_mcp_tool, name, arguments, request_timeout=timeout)
             return future.result(timeout=timeout)
         except FuturesTimeoutError:
+            if future is not None:
+                future.cancel()
             logging.error(f"Timeout calling tool '{name}' on MCP server: {self._mcp_server.id} (timeout={timeout})")
             return f"Timeout calling tool '{name}' (timeout={timeout})."
         except Exception as e:
@@ -238,75 +290,39 @@ class MCPToolCallSession(ToolCallSession):
             return f"Error calling tool '{name}': {e}."
 
     async def close(self) -> None:
-        if self._close:
-            return
-
-        self._close = True
-
-        while not self._queue.empty():
-            try:
-                _, _, result_queue = self._queue.get_nowait()
-                try:
-                    await result_queue.put(asyncio.CancelledError("Session is closing"))
-                except Exception:
-                    pass
-            except asyncio.QueueEmpty:
-                break
-            except Exception:
-                break
-
-        try:
-            self._event_loop.call_soon_threadsafe(self._event_loop.stop)
-        except Exception:
-            pass
-
-        try:
-            self._thread_pool.shutdown(wait=True)
-        except Exception:
-            pass
-
-        self.__class__._ALL_INSTANCES.discard(self)
+        if threading.current_thread() is self._thread:
+            with self._lifecycle_lock:
+                self._close = True
+            self._request_close()
+        else:
+            await asyncio.to_thread(self.close_sync)
 
     def close_sync(self, timeout: float | int = 5) -> None:
-        if not self._event_loop.is_running():
-            logging.warning(f"Event loop already stopped for {self._mcp_server.id}")
-            return
-
-        try:
-            future = asyncio.run_coroutine_threadsafe(self.close(), self._event_loop)
-            try:
-                future.result(timeout=timeout)
-            except FuturesTimeoutError:
-                logging.error(f"Timeout while closing session for server {self._mcp_server.id} (timeout={timeout})")
-            except Exception:
-                logging.exception(f"Unexpected error during close_sync for {self._mcp_server.id}")
-        except Exception:
-            logging.exception(f"Exception while scheduling close for server {self._mcp_server.id}")
+        with self._lifecycle_lock:
+            already_closing = self._close
+            self._close = True
+            thread, loop = self._thread, self._event_loop
+            if thread is None:
+                self.__class__._ALL_INSTANCES.discard(self)
+                return
+            if not already_closing and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(self._request_close)
+                except RuntimeError:
+                    pass  # The worker completed cleanup concurrently.
+        # Joining from the MCP loop itself deadlocks or raises; cleanup belongs
+        # to the worker's finally block, not a coroutine that stops its own loop.
+        if threading.current_thread() is not thread:
+            thread.join(timeout)
+            if thread.is_alive():
+                logging.warning("MCP session cleanup exceeded %.1fs", timeout)
 
 
 def close_multiple_mcp_toolcall_sessions(sessions: list[MCPToolCallSession]) -> None:
     logging.info(f"Want to clean up {len(sessions)} MCP sessions")
-
-    async def _gather_and_stop() -> None:
-        try:
-            await asyncio.gather(*[s.close() for s in sessions if s is not None], return_exceptions=True)
-        except Exception:
-            logging.exception("Exception during MCP session cleanup")
-        finally:
-            try:
-                loop.call_soon_threadsafe(loop.stop)
-            except Exception:
-                pass
-
-    try:
-        loop = asyncio.new_event_loop()
-        thread = threading.Thread(target=loop.run_forever, daemon=True)
-        thread.start()
-
-        asyncio.run_coroutine_threadsafe(_gather_and_stop(), loop).result()
-        thread.join()
-    except Exception:
-        logging.exception("Exception during MCP session cleanup thread management")
+    for session in sessions:
+        if session is not None:
+            session.close_sync()
 
     logging.info(f"{len(sessions)} MCP sessions has been cleaned up. {len(list(MCPToolCallSession._ALL_INSTANCES))} in global context.")
 
