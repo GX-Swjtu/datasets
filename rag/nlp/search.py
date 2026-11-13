@@ -883,7 +883,7 @@ class Dealer:
             doc_id2kb_id[ck["doc_id"]] = ck["kb_id"]
         doc_id = sorted(ranks.items(), key=lambda x: x[1] * -1.0)[0][0]
         kb_ids = [doc_id2kb_id[doc_id]]
-        es_res = self.dataStore.search(["content_with_weight"], [], {"doc_id": doc_id, "toc_kwd": "toc"}, [], OrderByExpr(), 0, 128, idx_nms, kb_ids)
+        es_res = await thread_pool_exec(self.dataStore.search, ["content_with_weight"], [], {"doc_id": doc_id, "toc_kwd": "toc"}, [], OrderByExpr(), 0, 128, idx_nms, kb_ids)
         toc = []
         dict_chunks = self.dataStore.get_fields(es_res, ["content_with_weight"])
         for _, doc in dict_chunks.items():
@@ -904,7 +904,7 @@ class Dealer:
             if cid in id2idx:
                 chunks[id2idx[cid]]["similarity"] += sim
                 continue
-            chunk = self.dataStore.get(cid, idx_nms[0], kb_ids)
+            chunk = await thread_pool_exec(self.dataStore.get, cid, idx_nms[0], kb_ids)
             if not chunk:
                 continue
             d = {
